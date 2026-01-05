@@ -1,0 +1,11 @@
+services:
+  fileflow-bridge:
+    image: superc/ffbridge
+    container_name: ffbridge
+    restart: always
+    environment:
+      - FFB_HTTP_PORT=8000
+      - FFB_TCP_PORT=8888
+    ports:
+      - "8000:8000"
+      - "8888:8888"

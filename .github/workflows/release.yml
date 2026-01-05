@@ -1,0 +1,89 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '手动指定版本号 (例如: 0.2.1)'
+        required: true
+        default: 'dev'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ""    
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.6'
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set Version Variable
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+          else
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
+      - name: Build Go Binaries
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -v -o bin/fileflowbridge-${{ env.VERSION }}-linux-amd64 bridge/main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -v -o bin/fileflowprovider-${{ env.VERSION }}-linux-amd64 provider/main.go
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -v -o bin/fileflowbridge-${{ env.VERSION }}-linux-arm64 bridge/main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -v -o bin/fileflowprovider-${{ env.VERSION }}-linux-arm64 provider/main.go
+
+          cp bin/fileflowbridge-${{ env.VERSION }}-linux-amd64 bin/fileflowbridge-linux-amd64
+          cp bin/fileflowbridge-${{ env.VERSION }}-linux-arm64 bin/fileflowbridge-linux-arm64
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            superc/ffbridge:${{ env.VERSION }}
+            superc/ffbridge:latest
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
+          files: |
+            bin/fileflowbridge-${{ env.VERSION }}-linux-amd64
+            bin/fileflowprovider-${{ env.VERSION }}-linux-amd64
+            bin/fileflowbridge-${{ env.VERSION }}-linux-arm64
+            bin/fileflowprovider-${{ env.VERSION }}-linux-arm64
+          generate_release_notes: true
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
