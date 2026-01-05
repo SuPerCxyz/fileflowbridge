@@ -24,30 +24,30 @@ import (
 
 // FileInfo 文件信息结构体
 type FileInfo struct {
-	Path     string
-	Name     string
-	Size     int64
+	Path	 string
+	Name	 string
+	Size	 int64
 	ModTime  int64
 }
 
 // RegisterResponse 注册文件响应结构体
 type RegisterResponse struct {
-	AuthToken       string `json:"auth_token"`
-	DownloadURL     string `json:"download_url"`
+	AuthToken	   string `json:"auth_token"`
+	DownloadURL	 string `json:"download_url"`
 	OriginalFilename string `json:"original_filename"`
-	TcpEndpoint     struct {
+	TcpEndpoint	 struct {
 		Host string `json:"host"`
-		Port int    `json:"port"`
+		Port int	`json:"port"`
 	} `json:"tcp_endpoint"`
 }
 
 // FlowProvider 主客户端结构体
 type FlowProvider struct {
-	BridgeURL    string
-	AuthToken    string
-	TcpHost      string
-	TcpPort      int
-	FileInfo     FileInfo
+	BridgeURL	string
+	AuthToken	string
+	TcpHost	  string
+	TcpPort	  int
+	FileInfo	 FileInfo
 	DownloadURL  string
 }
 
@@ -69,9 +69,9 @@ func (f *FlowProvider) RegisterFile(filePath string) (*RegisterResponse, error) 
 	}
 
 	f.FileInfo = FileInfo{
-		Path:    filePath,
-		Name:    filepath.Base(filePath),
-		Size:    fileInfo.Size(),
+		Path:	filePath,
+		Name:	filepath.Base(filePath),
+		Size:	fileInfo.Size(),
 		ModTime: fileInfo.ModTime().Unix(),
 	}
 
@@ -79,7 +79,7 @@ func (f *FlowProvider) RegisterFile(filePath string) (*RegisterResponse, error) 
 	registerURL := fmt.Sprintf("%s/register", f.BridgeURL)
 	payload := map[string]interface{}{
 		"filename": f.FileInfo.Name,
-		"size":     f.FileInfo.Size,
+		"size":	 f.FileInfo.Size,
 	}
 
 	jsonPayload, err := json.Marshal(payload)
@@ -188,6 +188,29 @@ func (f *FlowProvider) EstablishStreamConnection() error {
 	return nil
 }
 
+// FormatSpeed 格式化速度输出
+func FormatSpeed(bytesPerSecond float64) string {
+	units := []string{"B/s", "KiB/s", "MiB/s", "GiB/s"}
+	unitIndex := 0
+	for bytesPerSecond >= 1024 && unitIndex < len(units)-1 {
+		bytesPerSecond /= 1024
+		unitIndex++
+	}
+	return fmt.Sprintf("%.2f %s", bytesPerSecond, units[unitIndex])
+}
+
+// FormatSize 格式化大小输出
+func FormatSize(bytes int64) string {
+	size := float64(bytes)
+	units := []string{"B", "KiB", "MiB", "GiB"}
+	unitIndex := 0
+	for size >= 1024 && unitIndex < len(units)-1 {
+		size /= 1024
+		unitIndex++
+	}
+	return fmt.Sprintf("%.2f %s", size, units[unitIndex])
+}
+
 // streamFileContent 流式传输文件内容
 func (f *FlowProvider) streamFileContent(conn net.Conn) error {
 	file, err := os.Open(f.FileInfo.Path)
@@ -200,7 +223,7 @@ func (f *FlowProvider) streamFileContent(conn net.Conn) error {
 	progress := &ProgressBar{
 		Total: f.FileInfo.Size,
 		Desc:  "📤 上传中",
-		Units: []string{"B", "KB", "MB", "GB"},
+		Units: []string{"B", "KiB", "MiB", "GiB"},
 	}
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -234,12 +257,18 @@ func (f *FlowProvider) streamFileContent(conn net.Conn) error {
 
 	// 计算传输统计
 	duration := time.Since(startTime)
-	speed := float64(transferred) / duration.Seconds() / 1024 // KB/s
+	// 计算每秒字节数
+	var bps float64
+	if duration.Seconds() > 0 {
+		bps = float64(transferred) / duration.Seconds()
+	}
 
 	progress.Finish()
 	fmt.Printf(
-		"📊 传输统计: %d 字节, %.2f 秒, %.2f KB/s",
-		transferred, duration.Seconds(), speed,
+		"📊 传输统计: %s, 耗时 %.2f 秒, 平均速度: %s\n",
+		FormatSize(transferred),
+		duration.Seconds(),
+		FormatSpeed(bps),
 	)
 
 	return nil
@@ -284,12 +313,12 @@ func (f *FlowProvider) GenerateDownloadInfo() string {
 
 // ProgressBar 简单的进度条实现
 type ProgressBar struct {
-	Total     int64
+	Total	 int64
 	Current   int64
-	Desc      string
-	Units     []string
+	Desc	  string
+	Units	 []string
 	lastPrint time.Time
-	mu        sync.Mutex
+	mu		sync.Mutex
 }
 
 // Set 更新当前进度
@@ -330,22 +359,22 @@ func (p *ProgressBar) Print() {
 
 // Finish 完成进度条
 func (p *ProgressBar) Finish() {
-    p.mu.Lock()
-    defer p.mu.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-    // 获取当前大小（完成时 Current == Total）和单位（与 Total 单位一致）
-    currentSize, currentUnit := p.getHumanSize(p.Current)
-    totalSize, totalUnit := p.getHumanSize(p.Total)
+	// 获取当前大小（完成时 Current == Total）和单位（与 Total 单位一致）
+	currentSize, currentUnit := p.getHumanSize(p.Current)
+	totalSize, totalUnit := p.getHumanSize(p.Total)
 
-    // 格式化字符串：5个占位符对应5个参数
-    fmt.Printf("\r%s [%-50s] 100.0%% (%.2f %s / %.2f %s)\n",
-        p.Desc,                  // %s：描述文字（如 "上传中"）
-        strings.Repeat("=", 50), // %-50s：50个等号填满进度条
-        currentSize,             // %.2f：当前大小数值（完成时=总大小）
-        currentUnit,             // %s：当前单位（如 MB/GB）
-        totalSize,               // %.2f：总大小数值
-        totalUnit,                // %s：总单位（如 MB/GB）
-    )
+	// 格式化字符串：5个占位符对应5个参数
+	fmt.Printf("\r%s [%-50s] 100.0%% (%.2f %s / %.2f %s)\n",
+		p.Desc,				  // %s：描述文字（如 "上传中"）
+		strings.Repeat("=", 50), // %-50s：50个等号填满进度条
+		currentSize,			 // %.2f：当前大小数值（完成时=总大小）
+		currentUnit,			 // %s：当前单位（如 MiB/GiB）
+		totalSize,			   // %.2f：总大小数值
+		totalUnit,				// %s：总单位（如 MiB/GiB）
+	)
 }
 // getHumanSize 转换为人类可读的大小单位
 func (p *ProgressBar) getHumanSize(bytes int64) (float64, string) {
