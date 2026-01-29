@@ -1,11 +1,36 @@
+version: '3.8'
+
 services:
   fileflow-bridge:
-    image: superc/ffbridge
+    image: superc/ffbridge:latest  # 使用预构建的镜像
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: ffbridge
-    restart: always
-    environment:
-      - FFB_HTTP_PORT=8000
-      - FFB_TCP_PORT=8888
+    restart: unless-stopped
     ports:
-      - "8000:8000"
-      - "8888:8888"
+      - "${FFB_HTTP_PORT:-8000}:${FFB_HTTP_PORT:-8000}"
+      - "${FFB_TCP_PORT:-8888}:${FFB_TCP_PORT:-8888}"
+    environment:
+      - FFB_HTTP_PORT=${FFB_HTTP_PORT:-8000}
+      - FFB_TCP_PORT=${FFB_TCP_PORT:-8888}
+      - FFB_MAX_FILE_SIZE=${FFB_MAX_FILE_SIZE:-100}
+      - FFB_TOKEN_LEN=${FFB_TOKEN_LEN:-8}
+      - FFB_LOG_LEVEL=${FFB_LOG_LEVEL:-INFO}
+      - FFB_LOG_PATH=${FFB_LOG_PATH:-/var/log/fileflow_bridge.log}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    volumes:
+      - fileflow_logs:/var/log
+    networks:
+      - fileflow_network
+
+volumes:
+  fileflow_logs:
+
+networks:
+  fileflow_network:
+    driver: bridge

@@ -28,17 +28,57 @@
 
 服务端负责协调连接并提供 HTTP 访问入口。
 
-### 1. 运行二进制文件
+### 1. Docker 部署 (推荐)
 
-你可以直接运行预编译的二进制文件：
+最简单的部署方式是使用Docker，官方提供了预构建镜像：
+
+```bash
+# 使用预构建镜像运行（推荐）
+docker run -d --name fileflowbridge -p 8000:8000 -p 8888:8888 superc/ffbridge
+
+# 或使用自定义配置运行
+docker run -d --name fileflowbridge \
+  -p 8080:8080 \
+  -p 9999:9999 \
+  -e FFB_HTTP_PORT=8080 \
+  -e FFB_TCP_PORT=9999 \
+  -e FFB_MAX_FILE_SIZE=50 \
+  -e FFB_TOKEN_LEN=16 \
+  -e FFB_LOG_LEVEL=DEBUG \
+  superc/ffbridge
+```
+
+或者使用Docker Compose：
+
+```bash
+# 使用docker-compose（自动拉取预构建镜像）
+docker-compose up -d
+```
+
+对于开发用途，也可以从源码构建：
+
+```bash
+# 首先确保bin目录中有预构建的二进制文件
+mkdir -p bin
+GOOS=linux GOARCH=amd64 go build -o bin/fileflowbridge-linux-amd64 bridge/main.go
+
+# 然后构建Docker镜像
+docker build -t fileflowbridge .
+```
+
+### 2. 直接运行二进制文件
+
+你也可以直接运行预编译的二进制文件：
 
 ```bash
 ./fileflowbridge --http-port=8000 --tcp-port=8888 --max-file-size=100 --token-len=16
 ```
 
-### 2. 配置优先级
+### 3. 配置参数
 
 程序按以下优先级读取配置：**命令行参数 > 环境变量 > 默认值**。
+
+#### 3.1 所有可用配置选项
 
 | 配置项 | 命令行参数 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -46,6 +86,17 @@
 | **TCP 端口** | `--tcp-port` | `FFB_TCP_PORT` | `8888` | 接收文件流推送的内网/外网 TCP 端口 |
 | **最大文件限制** | `--max-file-size` | `FFB_MAX_FILE_SIZE` | `100` | 允许注册的最大文件大小 (**单位: GiB**) |
 | **AuthToken 长度** | `--token-len` | `FFB_TOKEN_LEN` | `8` | 注册时生成的 **AuthToken** 长度，长度越长安全性越高，长度范围6-32位，超出限制将改成默认8位 |
+| **日志级别** | 无 | `FFB_LOG_LEVEL` | `INFO` | 控制日志输出级别 |
+| **日志路径** | 无 | `FFB_LOG_PATH` | `fileflow_bridge.log` | 日志文件保存路径 |
+
+#### 3.2 配置说明
+
+- **FFB_HTTP_PORT**: HTTP服务器监听端口，用于提供API接口和文件下载服务
+- **FFB_TCP_PORT**: TCP流服务器监听端口，用于接收文件流数据
+- **FFB_MAX_FILE_SIZE**: 限制单个文件的最大大小（单位：GiB），例如设置为100表示最大支持100GiB文件
+- **FFB_TOKEN_LEN**: 认证令牌长度（6-32字符），更长的令牌更安全但会增加URL长度
+- **FFB_LOG_LEVEL**: 日志级别（INFO、DEBUG等），控制控制台输出的详细程度
+- **FFB_LOG_PATH**: 日志文件存储路径（在容器中运行时此设置会被忽略，只输出到控制台）
 
 ---
 
@@ -75,6 +126,25 @@
 1. **注册**：向服务端申请文件认证令牌。
 2. **生成链接**：终端输出唯一的 HTTP 下载地址。
 3. **流式传输**：当有人访问下载地址时，提供端会立即通过 TCP 隧道向服务端推送数据。
+
+---
+
+## 🔧 API 接口
+
+FileFlow Bridge 提供以下 REST API 接口：
+
+* `/register` - 注册新文件
+* `/upload/{auth_token}` - 上传文件（支持multipart表单）
+* `/download/{auth_token}` - 下载文件
+* `/download/{auth_token}/{filename}` - 按文件名下载
+* `/ws/{auth_token}` - WebSocket连接（用于浏览器上传）
+* `/status/{auth_token}` - 查询文件状态
+* `/stats` - 获取服务器统计信息
+* `/health` - 健康检查接口
+
+---
+
+## 📖 运行示例 (Demo)
 
 ---
 
@@ -120,3 +190,6 @@ https://ffb.soocoo.xyz/download/hU50yWYu/test_file
 * **不支持断点续传**：由于采用实时流物理透传，下载过程中断需重新发起注册。
 * **防火墙策略**：请确保服务端定义的 `HTTP 端口` 和 `TCP 端口` 在防火墙或安全组中已开放。
 * **安全性**：`AuthToken` 是 File Provider 连接 Bridge Server 进行流传输的唯一凭证。增加 `--token-len` 可以有效防止暴力破解
+* **服务端资源**：请确保服务端有足够的网络带宽和内存资源以支持高并发传输
+* **日志管理**：在生产环境中，建议配置日志轮转以避免占用过多磁盘空间。Docker部署方案已内置日志大小限制。
+* **静态文件**：服务器支持静态文件服务，会自动提供 `bridge/static` 目录下的文件。

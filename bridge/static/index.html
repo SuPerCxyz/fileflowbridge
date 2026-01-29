@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FileFlow Bridge - 文件上传</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            padding: 30px; /* 减少内边距 */
+            width: 100%;
+            max-width: 600px;
+            text-align: center;
+        }
+
+        h1 {
+            color: #4a5568;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .subtitle {
+            color: #718096;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .upload-area {
+            border: 3px dashed #cbd5e0;
+            border-radius: 10px;
+            padding: 30px 20px; /* 减少内边距 */
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background-color: #f7fafc;
+            margin-bottom: 15px; /* 减少外边距 */
+        }
+
+        .upload-area:hover,
+        .upload-area.drag-over {
+            border-color: #667eea;
+            background-color: #ebf8ff;
+        }
+
+        .upload-area.disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+
+        .upload-icon {
+            font-size: 3em; /* 减小图标大小 */
+            color: #a0aec0;
+            margin-bottom: 10px; /* 减少外边距 */
+        }
+
+        .upload-text {
+            font-size: 1em; /* 减小字体大小 */
+            color: #4a5568;
+            margin-bottom: 5px; /* 减少外边距 */
+        }
+
+        .upload-subtext {
+            color: #718096;
+            font-size: 0.8em; /* 减小字体大小 */
+        }
+
+        .file-info {
+            background: #f7fafc;
+            border-radius: 8px;
+            padding: 8px; /* 进一步减少内边距 */
+            margin: 10px 0; /* 进一步减少外边距 */
+            text-align: left;
+            display: none;
+            min-height: 45px; /* 进一步减少最小高度 */
+            font-size: 0.85em; /* 稍微减少字体大小 */
+        }
+
+        .file-info.show {
+            display: block;
+        }
+
+        .file-name, .file-size {
+            margin: 5px 0;
+            word-break: break-all;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 25px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            margin-top: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .progress-container {
+            margin: 10px 0; /* 进一步减少外边距 */
+            display: none;
+            min-height: 25px; /* 进一步减少最小高度 */
+        }
+
+        .progress-container.show {
+            display: block;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 15px; /* 减少高度 */
+            background-color: #e2e8f0;
+            border-radius: 8px; /* 减少圆角 */
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .progress-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-weight: bold;
+            font-size: 0.7em; /* 减少字体大小 */
+        }
+
+        .result-container {
+            margin: 8px 0; /* 减少外边距 */
+            display: none;
+            min-height: 80px; /* 减少最小高度 */
+            padding: 5px; /* 减少内边距 */
+            width: 100%; /* 设置为100%宽度以与其他元素对齐 */
+            box-sizing: border-box; /* 确保padding不会增加总宽度 */
+        }
+
+        .result-container.show {
+            display: block;
+        }
+
+        .download-link {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 8px; /* 调整为与success-message相同的内边距 */
+            word-break: break-all;
+            margin: 8px auto; /* 与progress-container相同的外边距 */
+            font-size: 1em; /* 增大字体大小 */
+            width: 100%; /* 使用100%宽度，因为不再有容器 */
+            box-sizing: border-box; /* 确保padding不会增加总宽度 */
+            display: none; /* 默认隐藏，通过JS控制显示 */
+        }
+
+        .download-link a {
+            display: block;
+            width: 100%;
+            color: #2d3748;
+            text-decoration: none;
+            word-break: break-all;
+            padding: 5px 0;
+        }
+
+        .download-link a:hover {
+            text-decoration: underline;
+            color: #667eea;
+        }
+
+        .copy-btn {
+            background: #48bb78;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+        }
+
+        .error-message {
+            color: #e53e3e;
+            background: #fed7d7;
+            border: 1px solid #feb2b2;
+            border-radius: 6px;
+            padding: 8px; /* 进一步减少内边距 */
+            margin: 8px auto; /* 居中对齐 */
+            display: none;
+            min-height: 35px; /* 进一步减少最小高度 */
+            font-size: 0.8em; /* 稍微减少字体大小以节省空间 */
+            width: 100%; /* 设置为100%宽度以与其他元素对齐 */
+            box-sizing: border-box; /* 确保padding不会增加总宽度 */
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
+        .success-message {
+            color: #38a169;
+            background: #c6f6d5;
+            border: 1px solid #9ae6b4;
+            border-radius: 6px;
+            padding: 8px; /* 进一步减少内边距 */
+            margin: 8px auto; /* 居中对齐 */
+            display: none;
+            min-height: 35px; /* 进一步减少最小高度 */
+            font-size: 0.8em; /* 稍微减少字体大小以节省空间 */
+            width: 100%; /* 设置为100%宽度以与其他元素对齐 */
+            box-sizing: border-box; /* 确保padding不会增加总宽度 */
+        }
+
+        .success-message.show {
+            display: block;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+                margin: 10px;
+            }
+            
+            h1 {
+                font-size: 2em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌊 FileFlow Bridge</h1>
+        <p class="subtitle">拖拽文件上传，立即获取下载链接</p>
+        
+        <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">📁</div>
+            <div class="upload-text">拖拽文件到这里或点击选择文件</div>
+            <div class="upload-subtext">支持任意类型文件，无大小限制</div>
+        </div>
+        
+        <input type="file" id="fileInput" class="hidden" />
+        
+        <div class="file-info" id="fileInfo">
+            <div class="file-name"><strong>文件名:</strong> <span id="fileName"></span></div>
+            <div class="file-size"><strong>文件大小:</strong> <span id="fileSize"></span></div>
+        </div>
+        
+        <button class="btn" id="uploadBtn" disabled>开始上传</button>
+        
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+                <div class="progress-text" id="progressText">0%</div>
+            </div>
+        </div>
+        
+        <div class="error-message" id="errorMessage"></div>
+        <div class="success-message" id="successMessage"></div>
+
+        <div class="download-link" id="downloadLink" style="display: none;"></div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const uploadArea = document.getElementById('uploadArea');
+            const fileInput = document.getElementById('fileInput');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const fileInfo = document.getElementById('fileInfo');
+            const fileName = document.getElementById('fileName');
+            const fileSize = document.getElementById('fileSize');
+            const progressContainer = document.getElementById('progressContainer');
+            const progressFill = document.getElementById('progressFill');
+            const progressText = document.getElementById('progressText');
+            const errorMessage = document.getElementById('errorMessage');
+            const successMessage = document.getElementById('successMessage');
+            const resultContainer = document.getElementById('resultContainer');
+            const downloadLink = document.getElementById('downloadLink');
+
+            let selectedFile = null;
+            let currentWebSocket = null;
+            let uploadInProgress = false;
+
+            // 点击上传区域选择文件
+            uploadArea.addEventListener('click', () => {
+                fileInput.click();
+            });
+
+            // 文件选择事件
+            fileInput.addEventListener('change', (event) => {
+                if (event.target.files.length > 0) {
+                    handleFileSelect(event.target.files[0]);
+                }
+            });
+
+            // 拖拽事件
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                uploadArea.addEventListener(eventName, preventDefaults, false);
+            });
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                uploadArea.addEventListener(eventName, highlight, false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                uploadArea.addEventListener(eventName, unhighlight, false);
+            });
+
+            function highlight() {
+                uploadArea.classList.add('drag-over');
+            }
+
+            function unhighlight() {
+                uploadArea.classList.remove('drag-over');
+            }
+
+            // 定义拖放处理函数
+            function handleDrop(e) {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+
+                if (files.length > 0) {
+                    handleFileSelect(files[0]);
+                }
+            }
+
+            // 处理拖放文件
+            uploadArea.addEventListener('drop', handleDrop);
+
+            function handleFileSelect(file) {
+                selectedFile = file;
+
+                // 显示文件信息
+                fileName.textContent = file.name;
+                fileSize.textContent = formatFileSize(file.size);
+
+                fileInfo.classList.add('show');
+                uploadBtn.disabled = false;
+
+                // 显示成功消息并重置状态
+                hideAllMessages();
+            }
+
+            function formatFileSize(bytes) {
+                if (bytes === 0) return '0 Bytes';
+
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+
+            uploadBtn.addEventListener('click', startUpload);
+
+            async function startUpload() {
+                if (!selectedFile) {
+                    showError('请选择一个文件');
+                    return;
+                }
+
+                if (uploadInProgress) {
+                    showError('上传已在进行中');
+                    return;
+                }
+
+                // 隐藏之前的消息
+                hideAllMessages();
+
+                // 显示进度条
+                progressContainer.classList.add('show');
+                updateProgress(0);
+
+                // 禁用上传按钮，防止重复点击
+                uploadBtn.disabled = true;
+
+                // 禁用拖拽区域
+                uploadArea.removeEventListener('drop', handleDrop);
+                uploadArea.classList.add('disabled');
+
+                uploadInProgress = true;
+
+                try {
+                    // 第一步：向服务器注册文件
+                    const registrationResult = await registerFile(selectedFile);
+
+                    if (!registrationResult.success) {
+                        throw new Error(registrationResult.error || '文件注册失败');
+                    }
+
+                    const { authToken, downloadUrl } = registrationResult;
+
+                    // 立即显示下载链接，让用户可以分享
+                    successMessage.innerHTML = `✅ 文件已注册，下载链接已生成！`;
+                    successMessage.classList.add('show');
+
+                    downloadLink.innerHTML = `
+                        <a href="${downloadUrl}" target="_blank">${downloadUrl}</a>
+                    `;
+                    downloadLink.style.display = 'block';
+
+                    // 第二步：建立WebSocket连接来传输文件内容
+                    await establishWebSocketStream(selectedFile, authToken);
+
+                } catch (error) {
+                    console.error('操作失败:', error);
+                    showError(error.message || '操作失败，请重试');
+                    progressContainer.classList.remove('show');
+                    uploadInProgress = false;
+                }
+            }
+
+            // 建立WebSocket连接传输文件
+            async function establishWebSocketStream(file, authToken) {
+                // 检查浏览器是否支持WebSocket
+                if (!window.WebSocket) {
+                    showError('浏览器不支持WebSocket，请更新浏览器');
+                    uploadInProgress = false;
+                    return;
+                }
+
+                // 构建WebSocket URL
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws/${authToken}`;
+
+                try {
+                    currentWebSocket = new WebSocket(wsUrl);
+
+                    currentWebSocket.onopen = function(event) {
+                        console.log('WebSocket连接已建立');
+                        successMessage.innerHTML = `✅ WebSocket连接已建立，等待下载请求...`;
+                        successMessage.classList.add('show');
+                    };
+
+                    currentWebSocket.onmessage = function(event) {
+                        // 服务器可能发送确认或其他控制消息
+                        try {
+                            const message = JSON.parse(event.data);
+
+                            if (message.command === 'READY') {
+                                console.log('服务器准备就绪');
+                                successMessage.innerHTML = `✅ 服务器已就绪，文件可通过链接下载...`;
+                            } else if (message.command === 'download_started') {
+                                // 下载端已开始下载
+                                console.log('下载已开始');
+                                successMessage.innerHTML = `🔄 正在传输文件数据...`;
+                                downloadLink.style.display = 'none';
+                            } else if (message.command === 'send_chunk') {
+                                // 服务器请求特定数据块，开始发送
+                                console.log('服务器请求数据块，开始发送文件数据...');
+                                successMessage.innerHTML = `🔄 正在传输文件数据...`;
+                                sendFileInChunks(currentWebSocket, file, message.offset, message.size);
+                            } else if (message.command === 'transfer_complete') {
+                                // 服务器通知传输已完成
+                                console.log('传输已完成');
+                                successMessage.innerHTML = `✅ 文件传输完成！`;
+                                uploadInProgress = false;
+                                // 重新启用上传按钮
+                                uploadBtn.disabled = false;
+                                // 重新启用拖拽区域
+                                uploadArea.addEventListener('drop', handleDrop);
+                                uploadArea.classList.remove('disabled');
+                                downloadLink.style.display = 'none';
+                            } else if (message.command === 'stop_upload') {
+                                // 服务器要求停止上传
+                                console.log('服务器要求停止上传');
+                                currentWebSocket.close();
+                                uploadInProgress = false;
+                                successMessage.innerHTML = `⚠️ 上传已停止，因为下载已取消`;
+                                // 重新启用上传按钮
+                                uploadBtn.disabled = false;
+                                // 重新启用拖拽区域
+                                uploadArea.addEventListener('drop', handleDrop);
+                                uploadArea.classList.remove('disabled');
+                                downloadLink.style.display = 'none';
+                            }
+                        } catch (e) {
+                            // 如果不是JSON格式的消息，忽略
+                            console.log('收到非JSON消息:', event.data);
+                        }
+                    };
+
+                    currentWebSocket.onerror = function(error) {
+                        console.error('WebSocket错误:', error);
+                        showError('WebSocket连接出错');
+                        uploadInProgress = false;
+                    };
+
+                    currentWebSocket.onclose = function(event) {
+                        console.log("WebSocket连接已关闭");
+                        if (!event.wasClean) {
+                            console.warn("WebSocket连接异常关闭");
+                        }
+                        // 只有在不是因为取消而关闭时才显示传输结束
+                        if (uploadInProgress) { // 如果还在上传过程中，说明是正常结束
+                            successMessage.innerHTML = `✅ 文件传输完成！`;
+                        }
+                        uploadInProgress = false;
+                        // 重新启用上传按钮
+                        uploadBtn.disabled = false;
+                        // 重新启用拖拽区域（如果还没有重新启用的话）
+                        if (uploadArea.classList.contains("disabled")) {
+                            uploadArea.classList.remove("disabled");
+                        }
+                        // 重新添加事件监听器（先移除再添加，避免重复）
+                        uploadArea.removeEventListener("drop", handleDrop);
+                        uploadArea.addEventListener("drop", handleDrop);
+                        downloadLink.style.display = "none";
+                    };
+                        uploadArea.removeEventListener("drop", handleDrop);
+                        uploadArea.addEventListener("drop", handleDrop);
+                        downloadLink.style.display = "none";
+                    };
+
+                } catch (error) {
+                    console.error('WebSocket连接失败:', error);
+                    showError('WebSocket连接失败，请刷新页面重试');
+                    uploadInProgress = false;
+                }
+            }
+
+            // 分块发送文件 - 只发送指定范围的数据
+            function sendFileInChunks(ws, file, offset = 0, size = file.size) {
+                const chunkSize = 64 * 1024; // 64KB chunks
+                let currentOffset = offset;
+                const end = Math.min(offset + size, file.size);
+
+                function readChunk() {
+                    if (currentOffset >= end || ws.readyState !== WebSocket.OPEN) {
+                        // 指定范围的数据发送完毕或WebSocket已关闭
+                        return;
+                    }
+
+                    const chunkEnd = Math.min(currentOffset + chunkSize, end);
+                    const chunk = file.slice(currentOffset, chunkEnd);
+                    const reader = new FileReader();
+
+                    reader.onload = function(e) {
+                        // 发送文件块
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.send(e.target.result);
+
+                            // 更新进度 - 这里是整个文件的进度
+                            currentOffset = chunkEnd;
+                            const percentComplete = Math.min(100, (currentOffset / file.size) * 100);
+                            updateProgress(percentComplete);
+
+                            // 继续发送下一块
+                            setTimeout(readChunk, 0); // 异步处理，避免阻塞UI
+                        }
+                    };
+
+                    reader.onerror = function(e) {
+                        console.error('读取文件块失败:', e);
+                        showError('读取文件块失败');
+                    };
+
+                    reader.readAsArrayBuffer(chunk);
+                }
+
+                // 开始发送第一块
+                readChunk();
+            }
+
+            async function registerFile(file) {
+                try {
+                    // 构造注册数据
+                    const registrationData = {
+                        filename: file.name,
+                        size: file.size
+                    };
+
+                    // 向服务器注册文件
+                    const response = await fetch('/register', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(registrationData)
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.text();
+                        throw new Error(`注册失败: ${response.status} - ${errorData}`);
+                    }
+
+                    const result = await response.json();
+
+                    return {
+                        success: true,
+                        authToken: result.auth_token,
+                        downloadUrl: result.download_url
+                    };
+
+                } catch (error) {
+                    console.error('注册文件失败:', error);
+                    return {
+                        success: false,
+                        error: error.message
+                    };
+                }
+            }
+
+            // 页面卸载时清理WebSocket连接
+            window.addEventListener('beforeunload', function() {
+                if (currentWebSocket && currentWebSocket.readyState === WebSocket.OPEN) {
+                    currentWebSocket.close();
+                }
+            });
+
+            function showError(message) {
+                errorMessage.textContent = message;
+                errorMessage.classList.add('show');
+            }
+
+            function hideAllMessages() {
+                errorMessage.classList.remove('show');
+                successMessage.classList.remove('show');
+                downloadLink.style.display = 'none';
+            }
+
+
+            // 更新进度条
+            function updateProgress(percent) {
+                progressFill.style.width = percent + '%';
+                progressText.textContent = Math.round(percent) + '%';
+            }
+
+            // 页面卸载时清理WebSocket连接
+            window.addEventListener('beforeunload', function() {
+                if (currentWebSocket) {
+                    currentWebSocket.close();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

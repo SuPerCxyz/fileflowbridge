@@ -5,8 +5,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"fmt"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
@@ -24,30 +24,31 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 )
 
 // 文件元数据结构
 type FileMetadata struct {
-	Filename		 string	`json:"filename"`
-	OriginalFilename string	`json:"original_filename"`
-	Size			 int64	 `json:"size"`
-	Status		   string	`json:"status"`
-	ClientIP		 string	`json:"client_ip"`
-	AuthToken		string	`json:"auth_token"`
-	RegisteredAt	 time.Time `json:"registered_at"`
-	ExpiresAt		time.Time `json:"expires_at"`
-	StreamStarted	time.Time `json:"stream_started,omitempty"`
-	ClientAddress	string	`json:"client_address,omitempty"`
+	Filename         string    `json:"filename"`
+	OriginalFilename string    `json:"original_filename"`
+	Size             int64     `json:"size"`
+	Status           string    `json:"status"`
+	ClientIP         string    `json:"client_ip"`
+	AuthToken        string    `json:"auth_token"`
+	RegisteredAt     time.Time `json:"registered_at"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	StreamStarted    time.Time `json:"stream_started,omitempty"`
+	ClientAddress    string    `json:"client_address,omitempty"`
 }
 
 // 服务器统计信息
 type ServerStats struct {
-	StartTime		 time.Time `json:"start_time"`
-	FilesRegistered   int	   `json:"files_registered"`
-	FilesTransferred  int	   `json:"files_transferred"`
-	BytesTransferred  int64	 `json:"bytes_transferred"`
-	ActiveConnections int	   `json:"active_connections"`
-	PeakConnections   int	   `json:"peak_connections"`
+	StartTime         time.Time `json:"start_time"`
+	FilesRegistered   int       `json:"files_registered"`
+	FilesTransferred  int       `json:"files_transferred"`
+	BytesTransferred  int64     `json:"bytes_transferred"`
+	ActiveConnections int       `json:"active_connections"`
+	PeakConnections   int       `json:"peak_connections"`
 }
 
 // TCP连接信息
@@ -57,24 +58,74 @@ type StreamConnection struct {
 	Conn   net.Conn
 }
 
+// 用于从channel读取数据的Reader
+type ChannelReader struct {
+	dataChan <-chan []byte
+	buffer   []byte
+	index    int
+	done     chan bool
+}
+
+// 实现io.Reader接口的Read方法
+func (cr *ChannelReader) Read(p []byte) (n int, err error) {
+	for {
+		// 如果有缓冲数据，先使用缓冲数据
+		if cr.buffer != nil && cr.index < len(cr.buffer) {
+			// 计算可以复制的字节数
+			remaining := len(cr.buffer) - cr.index
+			toCopy := len(p)
+			if toCopy > remaining {
+				toCopy = remaining
+			}
+
+			copy(p, cr.buffer[cr.index:cr.index+toCopy])
+			cr.index += toCopy
+			return toCopy, nil
+		}
+
+		// 从channel获取新数据
+		data, ok := <-cr.dataChan
+		if !ok {
+			// channel已关闭，表示没有更多数据
+			return 0, io.EOF
+		}
+
+		// 更新缓冲区
+		cr.buffer = data
+		cr.index = 0
+	}
+}
+
+// 全局WebSocket升级器
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		// 允许来自相同主机的连接
+		return true
+	},
+}
+
 // 文件流桥服务器
 type FileFlowBridge struct {
-	HTTPPort	  	int
-	TCPPort	   	int
-	MaxFileSize   	int64
-	TokenLength		int
-	ShutdownEvent 	chan struct{}
+	HTTPPort      int
+	TCPPort       int
+	MaxFileSize   int64
+	TokenLength   int
+	ShutdownEvent chan struct{}
 
-	fileRegistry	  map[string]*FileMetadata
-	activeStreams	 map[string]*StreamConnection
+	fileRegistry      map[string]*FileMetadata
+	activeStreams     map[string]interface{} // 使用interface{}以支持多种连接类型
 	downloadCompleted map[string]bool
-	serverStats	   ServerStats
-	isShuttingDown	bool
+	serverStats       ServerStats
+	isShuttingDown    bool
 
 	// 用于同步访问共享资源
 	mu sync.RWMutex
 }
 
+// 流连接接口
+type StreamConnectionInterface interface {
+	io.Reader
+}
 
 // 处理流错误
 func (ffb *FileFlowBridge) handleStreamError(authToken string, err error, conn net.Conn) {
@@ -106,7 +157,6 @@ func (ffb *FileFlowBridge) handleStreamError(authToken string, err error, conn n
 	}
 }
 
-
 // 检查连接状态
 func (ffb *FileFlowBridge) checkConnectionHealth(conn *StreamConnection) bool {
 	if conn == nil || conn.Conn == nil {
@@ -125,13 +175,13 @@ func (ffb *FileFlowBridge) checkConnectionHealth(conn *StreamConnection) bool {
 // 初始化服务器
 func NewFileFlowBridge(httpPort, tcpPort int, maxFileSize int64, tokenLength int) *FileFlowBridge {
 	return &FileFlowBridge{
-		HTTPPort:	  httpPort,
-		TCPPort:	   tcpPort,
-		MaxFileSize:   maxFileSize,
-		TokenLength:	  tokenLength,
-		ShutdownEvent: make(chan struct{}),
-		fileRegistry:  make(map[string]*FileMetadata),
-		activeStreams: make(map[string]*StreamConnection),
+		HTTPPort:          httpPort,
+		TCPPort:           tcpPort,
+		MaxFileSize:       maxFileSize,
+		TokenLength:       tokenLength,
+		ShutdownEvent:     make(chan struct{}),
+		fileRegistry:      make(map[string]*FileMetadata),
+		activeStreams:     make(map[string]interface{}),
 		downloadCompleted: make(map[string]bool),
 		serverStats: ServerStats{
 			StartTime: time.Now(),
@@ -157,12 +207,40 @@ func (ffb *FileFlowBridge) createNewID() string {
 func (ffb *FileFlowBridge) StartServer() error {
 	// 启动HTTP服务器
 	router := mux.NewRouter()
+
+	// API路由
 	router.HandleFunc("/register", ffb.handleFileRegistration).Methods("POST")
+	router.HandleFunc("/upload/{auth_token}", ffb.handleFileUpload).Methods("POST")
+	router.HandleFunc("/ws/{auth_token}", ffb.handleWebSocketConnection).Methods("GET")
 	router.HandleFunc("/download/{auth_token}", ffb.handleFileDownload)
 	router.HandleFunc("/download/{auth_token}/{filename}", ffb.handleFileDownloadWithName)
 	router.HandleFunc("/status/{auth_token}", ffb.handleStatusCheck)
 	router.HandleFunc("/stats", ffb.handleServerStats)
 	router.HandleFunc("/health", ffb.handleHealthCheck)
+
+	// WebSocket路由
+	router.HandleFunc("/ws/{auth_token}", ffb.handleWebSocketConnection).Methods("GET")
+
+	// 配置WebSocket升级器
+	upgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			// 允许来自相同主机的连接
+			return true
+		},
+	}
+
+	// 添加静态文件服务 - 放在最后以避免覆盖API路由
+	staticDir := "./bridge/static"
+	if _, err := os.Stat(staticDir); err == nil {
+		// 如果static目录存在，则提供静态文件服务
+		staticFS := http.FileServer(http.Dir(staticDir))
+
+		// 特殊处理根路径，返回index.html
+		router.HandleFunc("/", ffb.handleRootPage)
+
+		// 提供其他静态文件服务，但不覆盖API路由
+		router.PathPrefix("/").Handler(staticFS).Methods("GET")
+	}
 
 	// 配置CORS
 	corsMiddleware := func(next http.Handler) http.Handler {
@@ -181,7 +259,7 @@ func (ffb *FileFlowBridge) StartServer() error {
 	}
 
 	httpServer := &http.Server{
-		Addr:	fmt.Sprintf(":%d", ffb.HTTPPort),
+		Addr:    fmt.Sprintf(":%d", ffb.HTTPPort),
 		Handler: corsMiddleware(router),
 	}
 
@@ -238,7 +316,7 @@ func (ffb *FileFlowBridge) handleStreamConnection(conn net.Conn) {
 			conn.Close()
 			log.Printf("🔌 未完成握手的连接已释放: %s", conn.RemoteAddr().String())
 		}
-	}()	
+	}()
 	ffb.mu.Lock()
 	ffb.serverStats.ActiveConnections++
 	if ffb.serverStats.ActiveConnections > ffb.serverStats.PeakConnections {
@@ -354,10 +432,9 @@ func (ffb *FileFlowBridge) validateStreamConnection(authToken string) bool {
 	return true
 }
 
-
 // 监控连接健康状态
 func (ffb *FileFlowBridge) monitorConnectionHealth(conn *StreamConnection, authToken string) {
-	ticker := time.NewTicker(30 * time.Second) 
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	ffb.mu.RLock()
@@ -394,14 +471,13 @@ func (ffb *FileFlowBridge) monitorConnectionHealth(conn *StreamConnection, authT
 						var info syscall.TCPInfo
 						size := uint32(unsafe.Sizeof(info))
 						ptr := uintptr(unsafe.Pointer(&info))
-						_, _, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, 
+						_, _, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd,
 							syscall.IPPROTO_TCP, syscall.TCP_INFO, ptr, uintptr(unsafe.Pointer(&size)), 0)
 
 						if n == 0 && recvErr == nil {
 							isBroken = true
 							return
 						}
-
 
 						if errno == 0 && info.State != 1 {
 							isBroken = true
@@ -431,7 +507,6 @@ func (ffb *FileFlowBridge) monitorConnectionHealth(conn *StreamConnection, authT
 	}
 }
 
-
 func getScheme(r *http.Request) string {
 	// 检查反向代理头
 	if scheme := r.Header.Get("X-Forwarded-Proto"); scheme != "" {
@@ -445,6 +520,12 @@ func getScheme(r *http.Request) string {
 		return "https"
 	}
 	return "http"
+}
+
+// 处理根页面
+func (ffb *FileFlowBridge) handleRootPage(w http.ResponseWriter, r *http.Request) {
+	// 返回index.html
+	http.ServeFile(w, r, "./bridge/static/index.html")
 }
 
 // 获取正确的主机名（去除端口号）
@@ -466,7 +547,7 @@ func (ffb *FileFlowBridge) handleFileRegistration(w http.ResponseWriter, r *http
 
 	var data struct {
 		Filename string `json:"filename"`
-		Size	 int64  `json:"size"`
+		Size     int64  `json:"size"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
@@ -491,14 +572,14 @@ func (ffb *FileFlowBridge) handleFileRegistration(w http.ResponseWriter, r *http
 
 	// 存储文件元数据
 	metadata := &FileMetadata{
-		Filename:		 data.Filename,
+		Filename:         data.Filename,
 		OriginalFilename: data.Filename,
-		Size:			 data.Size,
-		Status:		   "registered",
-		ClientIP:		 clientIP,
-		AuthToken:		authToken,
-		RegisteredAt:	 time.Now(),
-		ExpiresAt:		time.Now().Add(2 * time.Hour),
+		Size:             data.Size,
+		Status:           "registered",
+		ClientIP:         clientIP,
+		AuthToken:        authToken,
+		RegisteredAt:     time.Now(),
+		ExpiresAt:        time.Now().Add(2 * time.Hour),
 	}
 
 	ffb.mu.Lock()
@@ -514,7 +595,7 @@ func (ffb *FileFlowBridge) handleFileRegistration(w http.ResponseWriter, r *http
 	var portStr string
 	if scheme == "https" || r.Header.Get("X-Forwarded-Proto") == "https" {
 		// 隐藏端口，因为 Caddy 已经处理了 443 -> 8000 的映射
-		portStr = "" 
+		portStr = ""
 	} else {
 		// 本地测试或非加密访问，显示程序真实的监听端口
 		portStr = fmt.Sprintf(":%d", ffb.HTTPPort)
@@ -525,20 +606,343 @@ func (ffb *FileFlowBridge) handleFileRegistration(w http.ResponseWriter, r *http
 	responseData := map[string]interface{}{
 		"auth_token": authToken,
 		"tcp_endpoint": map[string]interface{}{
-			"host": host, 
+			"host": host,
 			"port": ffb.TCPPort,
 		},
-		"download_url": 		fmt.Sprintf("%s://%s%s/download/%s/%s", scheme, host, portStr, authToken, safeFilename),
+		"download_url": fmt.Sprintf("%s://%s%s/download/%s/%s", scheme, host, portStr, authToken, safeFilename),
 		// "direct_download_url": fmt.Sprintf("%s://%s%d/download/%s", scheme, host, ffb.HTTPPort, authToken),
 		// "status_url":		  fmt.Sprintf("%s://%s%d/status/%s", scheme, host, ffb.HTTPPort, authToken),
-		"expires_at":		  	metadata.ExpiresAt.Format(time.RFC3339),
-		"original_filename":   	data.Filename,
+		"expires_at":        metadata.ExpiresAt.Format(time.RFC3339),
+		"original_filename": data.Filename,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(responseData)
 
 	log.Printf("📝 文件注册成功: %s (token_id: %s)", data.Filename, authToken)
+}
+
+// 处理文件上传
+func (ffb *FileFlowBridge) handleFileUpload(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	authToken := vars["auth_token"]
+
+	// 验证文件令牌
+	ffb.mu.RLock()
+	metadata, exists := ffb.fileRegistry[authToken]
+	ffb.mu.RUnlock()
+
+	if !exists {
+		http.Error(w, "无效的认证令牌", http.StatusUnauthorized)
+		return
+	}
+
+	// 验证请求内容类型
+	contentType := r.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "multipart/form-data") {
+		http.Error(w, "请求必须是multipart/form-data格式", http.StatusBadRequest)
+		return
+	}
+
+	// 限制上传大小
+	r.ParseMultipartForm(32 << 20) // 32MB
+
+	// 获取上传的文件
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		log.Printf("获取上传文件失败: %v", err)
+		http.Error(w, "获取上传文件失败", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// 更新文件状态
+	ffb.mu.Lock()
+	if ffb.fileRegistry[authToken] != nil {
+		ffb.fileRegistry[authToken].Status = "streaming"
+		ffb.fileRegistry[authToken].StreamStarted = time.Now()
+	}
+	ffb.mu.Unlock()
+
+	// 创建一个通道来处理数据流
+	dataChan := make(chan []byte, 10)
+
+	// 启动goroutine读取上传的文件数据
+	go func() {
+		defer close(dataChan)
+		buffer := make([]byte, 32*1024) // 32KB buffer
+		for {
+			// 检查下载是否已完成
+			ffb.mu.RLock()
+			completed := ffb.downloadCompleted[authToken]
+			ffb.mu.RUnlock()
+
+			if completed {
+				log.Printf("⚠️ 下载已完成，停止上传: %s", authToken)
+				return
+			}
+
+			n, err := file.Read(buffer)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buffer[:n])
+				select {
+				case dataChan <- data:
+				case <-time.After(5 * time.Second): // 减少超时时间以快速响应
+					log.Printf("数据通道超时，可能下载端已断开: %s", authToken)
+					return
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	// 创建一个reader来从channel读取数据
+	reader := &ChannelReader{
+		dataChan: dataChan,
+		buffer:   nil,
+		index:    0,
+		done:     nil,
+	}
+
+	// 将reader包装为StreamConnection
+	streamConn := &StreamConnection{
+		Reader: reader,
+		Writer: nil,
+		Conn:   nil,
+	}
+
+	ffb.mu.Lock()
+	ffb.activeStreams[authToken] = streamConn
+	ffb.mu.Unlock()
+
+	// 等待下载完成
+	downloadWaitStart := time.Now()
+	for {
+		ffb.mu.RLock()
+		completed := ffb.downloadCompleted[authToken]
+		_, exists := ffb.activeStreams[authToken]
+		ffb.mu.RUnlock()
+
+		if completed || !exists {
+			break
+		}
+
+		if time.Since(downloadWaitStart) > 10*time.Minute { // 增加超时时间
+			break // 下载超时
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// 不要在这里删除流连接，让handleDownloadRequest完成后删除
+	log.Printf("✅ 文件上传处理完成: %s (token_id: %s)", metadata.OriginalFilename, authToken)
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"success": true, "message": "文件上传处理完成"}`)
+}
+
+// WebSocket流连接
+type WebSocketStreamConnection struct {
+	Conn      *websocket.Conn
+	Buffer    []byte
+	Index     int
+	Mutex     sync.Mutex
+	DataChan  chan []byte
+	CloseChan chan struct{}
+}
+
+// 实现io.Reader接口，从WebSocket读取数据
+func (wsConn *WebSocketStreamConnection) Read(p []byte) (n int, err error) {
+	// 如果有缓冲数据，先使用缓冲数据
+	if wsConn.Buffer != nil && wsConn.Index < len(wsConn.Buffer) {
+		remaining := len(wsConn.Buffer) - wsConn.Index
+		toCopy := len(p)
+		if toCopy > remaining {
+			toCopy = remaining
+		}
+
+		copy(p, wsConn.Buffer[wsConn.Index:wsConn.Index+toCopy])
+		wsConn.Index += toCopy
+		return toCopy, nil
+	}
+
+	// 从WebSocket连接读取新数据
+	select {
+	case data, ok := <-wsConn.DataChan:
+		if !ok {
+			// 通道已关闭，表示没有更多数据
+			return 0, io.EOF
+		}
+
+		// 使用新数据作为缓冲
+		wsConn.Buffer = data
+		wsConn.Index = 0
+
+		// 返回一部分数据
+		remaining := len(wsConn.Buffer) - wsConn.Index
+		toCopy := len(p)
+		if toCopy > remaining {
+			toCopy = remaining
+		}
+
+		copy(p, wsConn.Buffer[wsConn.Index:wsConn.Index+toCopy])
+		wsConn.Index += toCopy
+		return toCopy, nil
+	case <-wsConn.CloseChan:
+		return 0, io.EOF
+	}
+}
+
+// 请求文件数据
+func (ffb *FileFlowBridge) requestFileData(authToken string, offset, size int64) {
+	// 向上传端请求特定偏移量和大小的数据块
+	conn, exists := ffb.activeStreams[authToken]
+	if !exists {
+		log.Printf("找不到连接: %s", authToken)
+		return
+	}
+
+	if wsConn, ok := conn.(*WebSocketStreamConnection); ok {
+		request := map[string]interface{}{
+			"command": "send_chunk",
+			"offset":  offset,
+			"size":    size,
+		}
+
+		err := wsConn.Conn.WriteJSON(request)
+		if err != nil {
+			log.Printf("发送数据请求失败: %v", err)
+		}
+	}
+}
+
+// 处理WebSocket连接
+func (ffb *FileFlowBridge) handleWebSocketConnection(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	authToken := vars["auth_token"]
+
+	// 验证认证令牌
+	ffb.mu.RLock()
+	_, exists := ffb.fileRegistry[authToken]
+	ffb.mu.RUnlock()
+
+	if !exists {
+		http.Error(w, "无效的认证令牌", http.StatusUnauthorized)
+		return
+	}
+
+	// 升级到WebSocket连接
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket升级失败: %v", err)
+		return
+	}
+
+	log.Printf("🔗 WebSocket连接已建立: %s", authToken)
+
+	// 创建WebSocket流连接
+	wsStreamConn := &WebSocketStreamConnection{
+		Conn:      conn,
+		Buffer:    nil,
+		Index:     0,
+		DataChan:  make(chan []byte, 50), // 增加缓冲区大小 to handle browser uploads
+		CloseChan: make(chan struct{}),
+	}
+
+	// 更新文件状态
+	ffb.mu.Lock()
+	if ffb.fileRegistry[authToken] != nil {
+		ffb.fileRegistry[authToken].Status = "streaming"
+		ffb.fileRegistry[authToken].StreamStarted = time.Now()
+	}
+	ffb.activeStreams[authToken] = wsStreamConn
+	ffb.mu.Unlock()
+
+	// Send READY message to indicate connection is established
+	err = conn.WriteMessage(websocket.TextMessage, []byte(`{"command":"READY"}`))
+	if err != nil {
+		log.Printf("发送READY消息失败: %v", err)
+		conn.Close()
+		return
+	}
+
+	// 启动数据读取协程
+	go func() {
+		defer close(wsStreamConn.DataChan)
+		defer close(wsStreamConn.CloseChan)
+		defer conn.Close()
+
+		for {
+			messageType, message, err := conn.ReadMessage()
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("WebSocket意外关闭: %v", err)
+				} else {
+					log.Printf("WebSocket连接关闭: %v", err)
+				}
+				break
+			}
+
+			if messageType == websocket.BinaryMessage {
+				// 检查是否有活跃的下载连接
+				ffb.mu.RLock()
+				isDownloadCompleted := ffb.downloadCompleted[authToken]
+				ffb.mu.RUnlock()
+
+				if isDownloadCompleted {
+					log.Printf("⚠️ 下载已完成，忽略上传数据: %s", authToken)
+					continue
+				}
+
+				// 接收到文件数据，发送到数据通道
+				data := make([]byte, len(message))
+				copy(data, message)
+
+				select {
+				case wsStreamConn.DataChan <- data:
+				case <-time.After(10 * time.Second): // 增加超时时间 to handle slower downloads
+					log.Printf("WebSocket数据通道阻塞，可能下载端已断开: %s", authToken)
+					return
+				}
+			} else if messageType == websocket.TextMessage {
+				// 处理文本消息
+				var msg map[string]interface{}
+				if err := json.Unmarshal(message, &msg); err == nil {
+					if cmd, ok := msg["command"]; ok {
+						switch cmd {
+						case "request_data":
+							// 客户端请求数据块
+							offset, _ := msg["offset"].(float64)
+							size, _ := msg["size"].(float64)
+							ffb.requestFileData(authToken, int64(offset), int64(size))
+						case "download_started":
+							// 下载端已开始下载
+							log.Printf("下载已开始: %s", authToken)
+						case "stop_upload":
+							// 客户端请求停止上传 (when download is cancelled)
+							log.Printf("客户端请求停止上传: %s", authToken)
+							ffb.removeFileResources(authToken)
+							return
+						}
+					}
+				}
+			}
+		}
+	}()
+
+	// 连接关闭时清理资源
+	defer func() {
+		ffb.mu.Lock()
+		delete(ffb.activeStreams, authToken)
+		ffb.mu.Unlock()
+		log.Printf("🔗 WebSocket连接已关闭: %s", authToken)
+	}()
+
+	// 保持连接活跃
+	<-wsStreamConn.CloseChan
 }
 
 // 处理文件下载
@@ -560,18 +964,21 @@ func (ffb *FileFlowBridge) handleFileDownloadWithName(w http.ResponseWriter, r *
 func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.Request, authToken string) {
 	ffb.mu.RLock()
 	metadata, exists := ffb.fileRegistry[authToken]
-	completed := ffb.downloadCompleted[authToken]
+	isCompleted := ffb.downloadCompleted[authToken]
 	ffb.mu.RUnlock()
 
-	if !exists || completed {
-		http.Error(w, "文件不存在或已下载", http.StatusNotFound)
+	if !exists {
+		http.Error(w, "文件不存在", http.StatusNotFound)
 		return
 	}
 
-	if completed {
+	if isCompleted {
 		http.Error(w, "文件下载已完成，资源已释放", http.StatusGone)
 		return
 	}
+
+	// 不要在这里设置downloadCompleted为false或true
+	// 现有的状态管理逻辑是正确的
 
 	defer ffb.removeFileResources(authToken)
 
@@ -582,11 +989,14 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 	}
 
 	// 检查流是否可用，如果不可用则等待一段时间
-	var streamConn *StreamConnection
+	var streamConn interface{}
 	var exists1 bool
 
-	// 等待最多10秒让流连接建立
-	for i := 0; i < 20; i++ {
+	// 等待最多30秒让流连接建立 (增加等待时间以适应高并发场景)
+	// 使用指数退避策略来减少锁竞争
+	waitDuration := 100 * time.Millisecond
+	maxRetries := 60 // 60 * 100ms = 6秒; 或者调整为 300 * 100ms = 30秒
+	for i := 0; i < maxRetries; i++ {
 		ffb.mu.RLock()
 		streamConn, exists1 = ffb.activeStreams[authToken]
 		ffb.mu.RUnlock()
@@ -595,7 +1005,11 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 			break
 		}
 
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(waitDuration)
+		// 可选：使用轻微的指数退避
+		if i > 5 { // 前几次快速检查，之后稍微减慢
+			waitDuration = 200 * time.Millisecond
+		}
 	}
 
 	if !exists1 {
@@ -622,13 +1036,84 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 	var localChunk int64
 	buf := make([]byte, 256*1024)
 
-	// 设置合理的读取超时（5分钟）
-	if conn := streamConn.Conn; conn != nil {
-		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+	// 根据连接类型进行处理
+	var reader io.Reader
+	var conn net.Conn
+
+	if tcpConn, ok := streamConn.(*StreamConnection); ok {
+		reader = tcpConn.Reader
+		conn = tcpConn.Conn
+		// 设置合理的读取超时（5分钟）
+		if conn != nil {
+			conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		}
+	} else if wsConn, ok := streamConn.(*WebSocketStreamConnection); ok {
+		reader = wsConn
+
+		// 对于WebSocket连接，发送请求数据的命令
+		// 这将触发上传端开始发送数据
+		request := map[string]interface{}{
+			"command": "download_started", // 通知上传端下载已开始
+			"offset":  0,                 // 从开头开始
+			"size":    metadata.Size,      // 请求整个文件
+		}
+		err := wsConn.Conn.WriteJSON(request)
+		if err != nil {
+			log.Printf("发送下载开始通知失败: %v", err)
+		} else {
+			log.Printf("✅ 已通知上传端下载已开始: %s", authToken)
+		}
+
+		// 然后发送实际的数据请求
+		request = map[string]interface{}{
+			"command": "send_chunk",
+			"offset":  0,             // 从开头开始
+			"size":    metadata.Size, // 请求整个文件
+		}
+		err = wsConn.Conn.WriteJSON(request)
+		if err != nil {
+			log.Printf("发送数据请求失败: %v", err)
+			http.Error(w, "无法从上传端请求数据", http.StatusInternalServerError)
+			return
+		}
+
+		conn = nil // WebSocket连接不需要设置超时
+	} else {
+		http.Error(w, "未知的连接类型", http.StatusInternalServerError)
+		return
+	}
+
+	// 检查客户端连接是否断开的函数
+	clientClosed := func() bool {
+		select {
+		case <-r.Context().Done():
+			return true
+		default:
+			return false
+		}
 	}
 
 	for {
-		n, err := streamConn.Reader.Read(buf)
+		// 检查客户端是否已断开连接
+		if clientClosed() {
+			log.Printf("❌ 客户端连接断开，停止传输: %s (token_id: %s)", metadata.OriginalFilename, authToken)
+			// 通知上传端停止上传
+			if wsConn, ok := streamConn.(*WebSocketStreamConnection); ok {
+				stopRequest := map[string]interface{}{
+					"command": "stop_upload",
+				}
+				// Attempt to send stop command but don't fail if connection is closed
+				if wsConn.Conn != nil {
+					err := wsConn.Conn.WriteJSON(stopRequest)
+					if err != nil {
+						log.Printf("无法发送停止上传命令: %v", err)
+					}
+				}
+			}
+			break
+		}
+
+		n, err := reader.Read(buf)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -639,13 +1124,13 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 				log.Printf("⚠️ 读取超时，但继续尝试: %v", err)
 
 				// 重置超时并继续尝试
-				if conn := streamConn.Conn; conn != nil {
+				if conn != nil {
 					conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 				}
 				continue
 			}
 
-			ffb.handleStreamError(authToken, err, streamConn.Conn)
+			ffb.handleStreamError(authToken, err, conn)
 			break
 		}
 
@@ -653,9 +1138,41 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 			break
 		}
 
+		// 再次检查客户端是否已断开连接
+		if clientClosed() {
+			log.Printf("❌ 客户端连接断开，停止传输: %s (token_id: %s)", metadata.OriginalFilename, authToken)
+			// 通知上传端停止上传
+			if wsConn, ok := streamConn.(*WebSocketStreamConnection); ok {
+				stopRequest := map[string]interface{}{
+					"command": "stop_upload",
+				}
+				// Attempt to send stop command but don't fail if connection is closed
+				if wsConn.Conn != nil {
+					err := wsConn.Conn.WriteJSON(stopRequest)
+					if err != nil {
+						log.Printf("无法发送停止上传命令: %v", err)
+					}
+				}
+			}
+			break
+		}
+
 		// 写入响应
 		if _, err := w.Write(buf[:n]); err != nil {
 			log.Printf("❌ 客户端断开连接: %v", err)
+			// 通知上传端停止上传
+			if wsConn, ok := streamConn.(*WebSocketStreamConnection); ok {
+				stopRequest := map[string]interface{}{
+					"command": "stop_upload",
+				}
+				// Attempt to send stop command but don't fail if connection is closed
+				if wsConn.Conn != nil {
+					err := wsConn.Conn.WriteJSON(stopRequest)
+					if err != nil {
+						log.Printf("无法发送停止上传命令: %v", err)
+					}
+				}
+			}
 			break
 		}
 
@@ -666,6 +1183,12 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 		totalTransferred += int64(n)
 		localChunk += int64(n)
 
+		// 检查是否已传输完整个文件
+		if totalTransferred >= metadata.Size {
+			log.Printf("✅ 文件数据已全部传输: %s (token_id: %s)", metadata.OriginalFilename, authToken)
+			break
+		}
+
 		if localChunk >= 10*1024*1024 {
 			ffb.mu.Lock()
 			ffb.serverStats.BytesTransferred += localChunk
@@ -674,7 +1197,7 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 		}
 
 		// 每次成功读取后重置超时
-		if conn := streamConn.Conn; conn != nil {
+		if conn != nil {
 			conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		}
 	}
@@ -686,6 +1209,7 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 	ffb.serverStats.BytesTransferred += localChunk
 	ffb.downloadCompleted[authToken] = true
 	ffb.mu.Unlock()
+
 	if transferTime > 0 {
 		sizeMiB := float64(totalTransferred) / (1024 * 1024)
 		speedValue := float64(totalTransferred) / transferTime / 1024
@@ -696,24 +1220,51 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 		}
 
 		log.Printf("✅ 传输完成: %s (token_id: %s), 大小: %.2f MiB, 耗时: %.2fs, 速度: %.2f %s",
-			metadata.OriginalFilename, 
-			authToken, 
-			sizeMiB, 
-			transferTime, 
-			speedValue, 
+			metadata.OriginalFilename,
+			authToken,
+			sizeMiB,
+			transferTime,
+			speedValue,
 			speedUnit,
 		)
-
-		if conn, exists := ffb.activeStreams[authToken]; exists {
-			if conn.Conn != nil {
-				conn.Conn.Close()
-				log.Printf("🔌 关闭已完成文件的TCP连接: %s (token_id: %s)", metadata.OriginalFilename, authToken)
-			}
-			delete(ffb.activeStreams, authToken)
-		}
-
-		log.Printf("🏁 文件标记为已完成: %s (token_id: %s)", metadata.OriginalFilename, authToken)
 	}
+
+	// 通知上传端传输已完成
+	if conn, exists := ffb.activeStreams[authToken]; exists {
+		if tcpConn, ok := conn.(*StreamConnection); ok && tcpConn.Conn != nil {
+			tcpConn.Conn.Close()
+			log.Printf("🔌 关闭已完成文件的TCP连接: %s (token_id: %s)", metadata.OriginalFilename, authToken)
+		} else if wsConn, ok := conn.(*WebSocketStreamConnection); ok {
+			// 发送传输完成通知给WebSocket连接
+			notification := map[string]interface{}{
+				"command": "transfer_complete",
+				"message": "文件传输已完成",
+			}
+
+			// 检查WebSocket连接是否仍然开放
+			if wsConn.Conn != nil {
+				// 尝试发送传输完成通知
+				err := wsConn.Conn.WriteJSON(notification)
+				if err != nil {
+					log.Printf("发送传输完成通知失败: %v", err)
+				} else {
+					log.Printf("✅ 已通知上传端传输完成: %s", authToken)
+				}
+			} else {
+				log.Printf("WebSocket连接已关闭，无法发送传输完成通知: %s", authToken)
+			}
+
+			if wsConn.Conn != nil {
+				wsConn.Conn.Close()
+			}
+			log.Printf("🔌 关闭已完成文件的WebSocket连接: %s (token_id: %s)", metadata.OriginalFilename, authToken)
+		}
+		delete(ffb.activeStreams, authToken)
+	} else {
+		log.Printf("⚠️ 传输完成时未找到活动连接: %s", authToken)
+	}
+
+	log.Printf("🏁 文件标记为已完成: %s (token_id: %s)", metadata.OriginalFilename, authToken)
 }
 
 // 检查文件状态
@@ -733,13 +1284,13 @@ func (ffb *FileFlowBridge) handleStatusCheck(w http.ResponseWriter, r *http.Requ
 
 	// 创建响应数据
 	responseData := map[string]interface{}{
-		"filename":		  metadata.Filename,
-		"original_filename": metadata.OriginalFilename,
-		"size":			  metadata.Size,
-		"status":			metadata.Status,
-		"client_ip":		 metadata.ClientIP,
-		"registered_at":	 metadata.RegisteredAt.Format(time.RFC3339),
-		"expires_at":		metadata.ExpiresAt.Format(time.RFC3339),
+		"filename":           metadata.Filename,
+		"original_filename":  metadata.OriginalFilename,
+		"size":               metadata.Size,
+		"status":             metadata.Status,
+		"client_ip":          metadata.ClientIP,
+		"registered_at":      metadata.RegisteredAt.Format(time.RFC3339),
+		"expires_at":         metadata.ExpiresAt.Format(time.RFC3339),
 		"download_completed": completed,
 	}
 
@@ -759,16 +1310,16 @@ func (ffb *FileFlowBridge) handleStatusCheck(w http.ResponseWriter, r *http.Requ
 func (ffb *FileFlowBridge) handleServerStats(w http.ResponseWriter, r *http.Request) {
 	ffb.mu.RLock()
 	stats := map[string]interface{}{
-		"status":			 	"running",
-		"uptime":				time.Since(ffb.serverStats.StartTime).Seconds(),
-		"files_registered":  	ffb.serverStats.FilesRegistered,
-		"files_transferred": 	ffb.serverStats.FilesTransferred,
-		"bytes_transferred": 	ffb.serverStats.BytesTransferred,
-		"active_connections":	ffb.serverStats.ActiveConnections,
-		"peak_connections":  	ffb.serverStats.PeakConnections,
-		"registered_files": 	len(ffb.fileRegistry),
-		"active_streams":   	len(ffb.activeStreams),
-		"completed_downloads": 	len(ffb.downloadCompleted),
+		"status":              "running",
+		"uptime":              time.Since(ffb.serverStats.StartTime).Seconds(),
+		"files_registered":    ffb.serverStats.FilesRegistered,
+		"files_transferred":   ffb.serverStats.FilesTransferred,
+		"bytes_transferred":   ffb.serverStats.BytesTransferred,
+		"active_connections":  ffb.serverStats.ActiveConnections,
+		"peak_connections":    ffb.serverStats.PeakConnections,
+		"registered_files":    len(ffb.fileRegistry),
+		"active_streams":      len(ffb.activeStreams),
+		"completed_downloads": len(ffb.downloadCompleted),
 	}
 	ffb.mu.RUnlock()
 
@@ -779,7 +1330,7 @@ func (ffb *FileFlowBridge) handleServerStats(w http.ResponseWriter, r *http.Requ
 // 健康检查
 func (ffb *FileFlowBridge) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
-		"status":	"healthy",
+		"status":    "healthy",
 		"timestamp": time.Now().Format(time.RFC3339),
 		"version":   "1.0.0",
 	}
@@ -832,14 +1383,18 @@ func (ffb *FileFlowBridge) removeFileResources(authToken string) {
 
 	// 关闭TCP连接
 	if streamConn, exists := ffb.activeStreams[authToken]; exists {
-		if streamConn.Conn != nil {
-			streamConn.Conn.Close()
+		if tcpConn, ok := streamConn.(*StreamConnection); ok && tcpConn.Conn != nil {
+			tcpConn.Conn.Close()
+		} else if wsConn, ok := streamConn.(*WebSocketStreamConnection); ok && wsConn.Conn != nil {
+			wsConn.Conn.Close()
 		}
 		delete(ffb.activeStreams, authToken)
 	}
 
 	// 移除下载完成标记
 	delete(ffb.downloadCompleted, authToken)
+
+	log.Printf("🗑️ 文件资源已清理: %s", authToken)
 }
 
 // 优雅关闭
