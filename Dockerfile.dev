@@ -1,0 +1,45 @@
+# 开发调试版 Dockerfile - 包含 Go 工具链用于实时编译和调试
+FROM golang:1.24-alpine
+
+# 设置环境变量
+ENV FFB_HTTP_PORT=8000
+ENV FFB_TCP_PORT=8888
+ENV FFB_MAX_FILE_SIZE=100
+ENV FFB_TOKEN_LEN=8
+ENV FFB_LOG_LEVEL=DEBUG
+ENV APP_HOME=/app
+
+# 安装必要的工具
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    git \
+    openssh \
+    curl \
+    wget \
+    && addgroup -S appgroup \
+    && adduser -S appuser -G appgroup
+
+# 创建工作目录
+WORKDIR ${APP_HOME}
+
+# 复制 go mod 文件并下载依赖
+COPY go.mod go.sum ./
+RUN go mod download
+
+# 复制源代码
+COPY bridge/ ./bridge/
+COPY bridge/static/ ./static/
+
+# 创建日志目录并设置权限
+RUN mkdir -p /var/log && chown -R appuser:appgroup /var/log
+
+# 切换到非root用户
+USER appuser
+
+# 暴露端口
+EXPOSE ${FFB_HTTP_PORT} ${FFB_TCP_PORT}
+
+# 开发模式启动命令 - 先切换到 bridge 目录
+WORKDIR ${APP_HOME}/bridge
+CMD ["sh", "-c", "go run main.go"]

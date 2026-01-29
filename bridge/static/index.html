@@ -550,11 +550,6 @@
                         uploadArea.addEventListener("drop", handleDrop);
                         downloadLink.style.display = "none";
                     };
-                        uploadArea.removeEventListener("drop", handleDrop);
-                        uploadArea.addEventListener("drop", handleDrop);
-                        downloadLink.style.display = "none";
-                    };
-
                 } catch (error) {
                     console.error('WebSocket连接失败:', error);
                     showError('WebSocket连接失败，请刷新页面重试');

@@ -230,7 +230,7 @@ func (ffb *FileFlowBridge) StartServer() error {
 	}
 
 	// 添加静态文件服务 - 放在最后以避免覆盖API路由
-	staticDir := "./bridge/static"
+	staticDir := "./static"
 	if _, err := os.Stat(staticDir); err == nil {
 		// 如果static目录存在，则提供静态文件服务
 		staticFS := http.FileServer(http.Dir(staticDir))
@@ -525,7 +525,7 @@ func getScheme(r *http.Request) string {
 // 处理根页面
 func (ffb *FileFlowBridge) handleRootPage(w http.ResponseWriter, r *http.Request) {
 	// 返回index.html
-	http.ServeFile(w, r, "./bridge/static/index.html")
+	http.ServeFile(w, r, "./static/index.html")
 }
 
 // 获取正确的主机名（去除端口号）

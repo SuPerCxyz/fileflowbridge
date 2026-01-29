@@ -17,19 +17,13 @@ services:
       - FFB_MAX_FILE_SIZE=${FFB_MAX_FILE_SIZE:-100}
       - FFB_TOKEN_LEN=${FFB_TOKEN_LEN:-8}
       - FFB_LOG_LEVEL=${FFB_LOG_LEVEL:-INFO}
-      - FFB_LOG_PATH=${FFB_LOG_PATH:-/var/log/fileflow_bridge.log}
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "5"
-    volumes:
-      - fileflow_logs:/var/log
     networks:
       - fileflow_network
-
-volumes:
-  fileflow_logs:
 
 networks:
   fileflow_network:

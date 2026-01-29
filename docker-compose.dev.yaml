@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  fileflow-bridge-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: ffbridge-dev
+    restart: unless-stopped
+    ports:
+      - "${FFB_HTTP_PORT:-8000}:${FFB_HTTP_PORT:-8000}"
+      - "${FFB_TCP_PORT:-8888}:${FFB_TCP_PORT:-8888}"
+    environment:
+      - FFB_HTTP_PORT=${FFB_HTTP_PORT:-8000}
+      - FFB_TCP_PORT=${FFB_TCP_PORT:-8888}
+      - FFB_MAX_FILE_SIZE=${FFB_MAX_FILE_SIZE:-100}
+      - FFB_TOKEN_LEN=${FFB_TOKEN_LEN:-8}
+      - FFB_LOG_LEVEL=${FFB_LOG_LEVEL:-DEBUG}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    volumes:
+      # 将源代码挂载到容器中，实现热重载
+      - ./bridge:/app/bridge:rw
+      # 同时也挂载静态文件目录以支持开发时的实时更新
+      - ./bridge/static:/app/static:rw
+      # 日志卷
+      - fileflow_dev_logs:/var/log
+      # 可选：如果需要持久化存储文件传输记录
+      - fileflow_dev_data:/tmp/fileflow  # 根据实际应用路径调整
+    networks:
+      - fileflow_dev_network
+    # 开发环境下不需要特权访问，但如果需要网络调试可以考虑添加
+    # cap_add:
+    #   - NET_ADMIN
+
+  # 可选：添加一个用于监控的工具（如 watchtower 自动更新镜像）
+  # watchtower:
+  #   image: containrrr/watchtower
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   command: --interval 30
+
+volumes:
+  fileflow_dev_logs:
+  fileflow_dev_data:
+
+networks:
+  fileflow_dev_network:
+    driver: bridge
