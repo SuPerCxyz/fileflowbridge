@@ -1,0 +1,27 @@
+{
+  "name": "work",
+  "version": "1.0.0",
+  "description": "`FileFlow Bridge` 是一款高性能的文件流转桥接工具。它采用 **“边传边下” (Streaming Bridge)** 技术，打破了传统中转服务器“先完整上传、再分发下载”的模式，实现零等待的即时文件分发。",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "go test ./...",
+    "vet": "go vet ./...",
+    "browser:anomaly": "./scripts/run_browser_anomaly_tests.sh",
+    "anomaly:all": "./scripts/run_all_anomaly_tests.sh",
+    "release:check": "./scripts/run_all_anomaly_tests.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "ssh://git@git.soocoo.xyz:10022/superc/FileFlowBridge.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

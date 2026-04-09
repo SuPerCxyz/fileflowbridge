@@ -28,6 +28,8 @@
 
 服务端负责协调连接并提供 HTTP 访问入口。
 
+构建命令、开发验证命令和完整环境变量说明已拆分到 [docs/agents/runtime-and-commands.md](docs/agents/runtime-and-commands.md)。本 README 仅保留用户部署和使用时最常用的信息。
+
 ### 1. Docker 部署 (推荐)
 
 最简单的部署方式是使用Docker，官方提供了预构建镜像：
@@ -74,11 +76,9 @@ docker build -t fileflowbridge .
 ./fileflowbridge --http-port=8000 --tcp-port=8888 --max-file-size=100 --token-len=16
 ```
 
-### 3. 配置参数
+### 3. 常用配置参数
 
 程序按以下优先级读取配置：**命令行参数 > 环境变量 > 默认值**。
-
-#### 3.1 所有可用配置选项
 
 | 配置项 | 命令行参数 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -89,14 +89,7 @@ docker build -t fileflowbridge .
 | **日志级别** | 无 | `FFB_LOG_LEVEL` | `INFO` | 控制日志输出级别 |
 | **日志路径** | 无 | `FFB_LOG_PATH` | `fileflow_bridge.log` | 日志文件保存路径 |
 
-#### 3.2 配置说明
-
-- **FFB_HTTP_PORT**: HTTP服务器监听端口，用于提供API接口和文件下载服务
-- **FFB_TCP_PORT**: TCP流服务器监听端口，用于接收文件流数据
-- **FFB_MAX_FILE_SIZE**: 限制单个文件的最大大小（单位：GiB），例如设置为100表示最大支持100GiB文件
-- **FFB_TOKEN_LEN**: 认证令牌长度（6-32字符），更长的令牌更安全但会增加URL长度
-- **FFB_LOG_LEVEL**: 日志级别（INFO、DEBUG等），控制控制台输出的详细程度
-- **FFB_LOG_PATH**: 日志文件存储路径（在容器中运行时此设置会被忽略，只输出到控制台）
+更完整的构建、运行和开发命令见 [docs/agents/runtime-and-commands.md](docs/agents/runtime-and-commands.md)。
 
 ---
 
@@ -118,7 +111,7 @@ docker build -t fileflowbridge .
 
 ```bash
 # 假设服务端运行在 1.2.3.4 的 8000 端口
-./fileflowprovide http://1.2.3.4:8000 /home/data/large_video.mp4
+./fileflowprovider http://1.2.3.4:8000 /home/data/large_video.mp4
 ```
 
 ### 执行流程
@@ -143,8 +136,6 @@ FileFlow Bridge 提供以下 REST API 接口：
 * `/health` - 健康检查接口
 
 ---
-
-## 📖 运行示例 (Demo)
 
 ---
 
@@ -193,3 +184,31 @@ https://ffb.soocoo.xyz/download/hU50yWYu/test_file
 * **服务端资源**：请确保服务端有足够的网络带宽和内存资源以支持高并发传输
 * **日志管理**：在生产环境中，建议配置日志轮转以避免占用过多磁盘空间。Docker部署方案已内置日志大小限制。
 * **静态文件**：服务器支持静态文件服务，会自动提供 `bridge/static` 目录下的文件。
+
+---
+
+## 📚 补充文档
+
+* 用户部署与日常使用：当前 [README.md](README.md)
+* 开发容器与调试流程：[DEVELOPMENT.md](DEVELOPMENT.md)
+* 构建、运行、环境变量全集：[docs/agents/runtime-and-commands.md](docs/agents/runtime-and-commands.md)
+* 测试执行用项目用户手册：[docs/project-user-manual.md](docs/project-user-manual.md)
+* 浏览器异常测试脚本：[docs/browser-anomaly-tests.md](docs/browser-anomaly-tests.md)
+* 统一异常测试入口：[docs/all-anomaly-tests.md](docs/all-anomaly-tests.md)
+
+### 快速测试入口
+
+```bash
+# Go 基础验证
+npm test
+npm run vet
+
+# 仅浏览器异常场景
+npm run browser:anomaly
+
+# 统一运行 Go + 正式异常测试
+npm run anomaly:all
+
+# 发布前检查
+npm run release:check
+```

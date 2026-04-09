@@ -2,6 +2,8 @@
 
 这是一个用于开发和调试 FileFlow Bridge 的容器化开发环境。
 
+基础构建命令、运行命令和环境变量全集已收口到 [docs/agents/runtime-and-commands.md](docs/agents/runtime-and-commands.md)。本文件只保留开发容器和调试相关流程，避免与用户文档和代理文档重复。
+
 ## 快速开始
 
 ### 使用开发管理脚本
@@ -18,10 +20,10 @@
 
 ```bash
 # 构建并启动开发环境
-docker-compose -f docker-compose.debug.yaml up -d
+docker-compose -f docker-compose.dev.yaml up -d
 
 # 查看日志
-docker-compose -f docker-compose.debug.yaml logs -f
+docker-compose -f docker-compose.dev.yaml logs -f
 ```
 
 ## 开发环境特性
@@ -72,18 +74,33 @@ docker-compose -f docker-compose.debug.yaml logs -f
 ./dev-manager.sh build
 ```
 
-## 环境变量
+## 配置来源
 
-通过 `.env` 文件自定义配置：
+开发环境仍然通过 `.env` 文件控制端口和日志级别，但变量说明不再在这里重复展开；请直接查看 [docs/agents/runtime-and-commands.md](docs/agents/runtime-and-commands.md)。
 
+## 异常测试入口
+
+仓库内现已提供可直接执行的异常测试入口：
+
+```bash
+# Go 基础验证
+npm test
+npm run vet
+
+# 仅浏览器异常场景
+npm run browser:anomaly
+
+# 统一运行 go test / go vet / 临时 Bridge / 浏览器异常场景
+npm run anomaly:all
+
+# 发布前检查
+npm run release:check
 ```
-FFB_HTTP_PORT=8000
-FFB_TCP_PORT=8888
-FFB_MAX_FILE_SIZE=100
-FFB_TOKEN_LEN=8
-FFB_LOG_LEVEL=DEBUG
-FFB_LOG_PATH=/var/log/fileflow_bridge.log
-```
+
+详细说明见：
+
+- [docs/browser-anomaly-tests.md](docs/browser-anomaly-tests.md)
+- [docs/all-anomaly-tests.md](docs/all-anomaly-tests.md)
 
 ## 生产环境部署
 
