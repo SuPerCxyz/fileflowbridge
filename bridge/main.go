@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"math/big"
@@ -104,6 +105,12 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+const (
+	tcpStreamReadTimeout     = 5 * time.Second
+	connectionHealthInterval = 5 * time.Second
+	completedDownloadTTL     = 1 * time.Minute
+)
+
 // 文件流桥服务器
 type FileFlowBridge struct {
 	HTTPPort      int
@@ -112,11 +119,12 @@ type FileFlowBridge struct {
 	TokenLength   int
 	ShutdownEvent chan struct{}
 
-	fileRegistry      map[string]*FileMetadata
-	activeStreams     map[string]interface{} // 使用interface{}以支持多种连接类型
-	downloadCompleted map[string]bool
-	serverStats       ServerStats
-	isShuttingDown    bool
+	fileRegistry        map[string]*FileMetadata
+	activeStreams       map[string]interface{} // 使用interface{}以支持多种连接类型
+	downloadCompleted   map[string]bool
+	downloadCompletedAt map[string]time.Time
+	serverStats         ServerStats
+	isShuttingDown      bool
 
 	// 用于同步访问共享资源
 	mu sync.RWMutex
@@ -175,14 +183,15 @@ func (ffb *FileFlowBridge) checkConnectionHealth(conn *StreamConnection) bool {
 // 初始化服务器
 func NewFileFlowBridge(httpPort, tcpPort int, maxFileSize int64, tokenLength int) *FileFlowBridge {
 	return &FileFlowBridge{
-		HTTPPort:          httpPort,
-		TCPPort:           tcpPort,
-		MaxFileSize:       maxFileSize,
-		TokenLength:       tokenLength,
-		ShutdownEvent:     make(chan struct{}),
-		fileRegistry:      make(map[string]*FileMetadata),
-		activeStreams:     make(map[string]interface{}),
-		downloadCompleted: make(map[string]bool),
+		HTTPPort:            httpPort,
+		TCPPort:             tcpPort,
+		MaxFileSize:         maxFileSize,
+		TokenLength:         tokenLength,
+		ShutdownEvent:       make(chan struct{}),
+		fileRegistry:        make(map[string]*FileMetadata),
+		activeStreams:       make(map[string]interface{}),
+		downloadCompleted:   make(map[string]bool),
+		downloadCompletedAt: make(map[string]time.Time),
 		serverStats: ServerStats{
 			StartTime: time.Now(),
 		},
@@ -434,7 +443,7 @@ func (ffb *FileFlowBridge) validateStreamConnection(authToken string) bool {
 
 // 监控连接健康状态
 func (ffb *FileFlowBridge) monitorConnectionHealth(conn *StreamConnection, authToken string) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(connectionHealthInterval)
 	defer ticker.Stop()
 
 	ffb.mu.RLock()
@@ -754,6 +763,28 @@ type WebSocketStreamConnection struct {
 	CloseChan chan struct{}
 }
 
+func (wsConn *WebSocketStreamConnection) writeJSON(v interface{}) error {
+	wsConn.Mutex.Lock()
+	defer wsConn.Mutex.Unlock()
+
+	if wsConn.Conn == nil {
+		return io.EOF
+	}
+
+	return wsConn.Conn.WriteJSON(v)
+}
+
+func (wsConn *WebSocketStreamConnection) writeMessage(messageType int, data []byte) error {
+	wsConn.Mutex.Lock()
+	defer wsConn.Mutex.Unlock()
+
+	if wsConn.Conn == nil {
+		return io.EOF
+	}
+
+	return wsConn.Conn.WriteMessage(messageType, data)
+}
+
 // 实现io.Reader接口，从WebSocket读取数据
 func (wsConn *WebSocketStreamConnection) Read(p []byte) (n int, err error) {
 	// 如果有缓冲数据，先使用缓冲数据
@@ -812,7 +843,7 @@ func (ffb *FileFlowBridge) requestFileData(authToken string, offset, size int64)
 			"size":    size,
 		}
 
-		err := wsConn.Conn.WriteJSON(request)
+		err := wsConn.writeJSON(request)
 		if err != nil {
 			log.Printf("发送数据请求失败: %v", err)
 		}
@@ -862,7 +893,7 @@ func (ffb *FileFlowBridge) handleWebSocketConnection(w http.ResponseWriter, r *h
 	ffb.mu.Unlock()
 
 	// Send READY message to indicate connection is established
-	err = conn.WriteMessage(websocket.TextMessage, []byte(`{"command":"READY"}`))
+	err = wsStreamConn.writeMessage(websocket.TextMessage, []byte(`{"command":"READY"}`))
 	if err != nil {
 		log.Printf("发送READY消息失败: %v", err)
 		conn.Close()
@@ -935,6 +966,18 @@ func (ffb *FileFlowBridge) handleWebSocketConnection(w http.ResponseWriter, r *h
 
 	// 连接关闭时清理资源
 	defer func() {
+		ffb.mu.RLock()
+		metadata, exists := ffb.fileRegistry[authToken]
+		completed := ffb.downloadCompleted[authToken]
+		shouldCleanup := exists && !completed && metadata.Status == "streaming"
+		ffb.mu.RUnlock()
+
+		if shouldCleanup {
+			ffb.removeFileResources(authToken)
+			log.Printf("🧹 已清理放弃的WebSocket上传: %s", authToken)
+			return
+		}
+
 		ffb.mu.Lock()
 		delete(ffb.activeStreams, authToken)
 		ffb.mu.Unlock()
@@ -960,6 +1003,55 @@ func (ffb *FileFlowBridge) handleFileDownloadWithName(w http.ResponseWriter, r *
 	ffb.handleDownloadRequest(w, r, authToken)
 }
 
+// 检测请求是否来自浏览器
+func isBrowserRequest(r *http.Request) bool {
+	userAgent := strings.ToLower(r.UserAgent())
+	acceptHeader := r.Header.Get("Accept")
+
+	// 检查是否来自常见浏览器
+	browserIndicators := []string{
+		"mozilla/",
+		"chrome/",
+		"safari/",
+		"firefox/",
+		"edge/",
+		"opera/",
+	}
+
+	isBrowser := false
+	for _, indicator := range browserIndicators {
+		if strings.Contains(userAgent, indicator) {
+			isBrowser = true
+			break
+		}
+	}
+
+	// 检查Accept头是否为*/* (通常浏览器发送此值)
+	acceptContainsStar := strings.Contains(acceptHeader, "*/*")
+
+	// 检查是否来自命令行工具
+	commandLineIndicators := []string{
+		"wget",
+		"curl",
+		"lwp-request",
+		"libwww-perl",
+		"python-urllib",
+		"java",
+		"okhttp",
+	}
+
+	isCommandLine := false
+	for _, indicator := range commandLineIndicators {
+		if strings.Contains(userAgent, indicator) {
+			isCommandLine = true
+			break
+		}
+	}
+
+	// 如果是浏览器请求并且不是命令行工具，则显示下载页面
+	return isBrowser && !isCommandLine && acceptContainsStar
+}
+
 // 处理下载请求的核心逻辑
 func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.Request, authToken string) {
 	ffb.mu.RLock()
@@ -967,26 +1059,48 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 	isCompleted := ffb.downloadCompleted[authToken]
 	ffb.mu.RUnlock()
 
-	if !exists {
-		http.Error(w, "文件不存在", http.StatusNotFound)
-		return
-	}
-
 	if isCompleted {
 		http.Error(w, "文件下载已完成，资源已释放", http.StatusGone)
 		return
 	}
 
-	// 不要在这里设置downloadCompleted为false或true
-	// 现有的状态管理逻辑是正确的
+	if !exists {
+		http.Error(w, "文件不存在", http.StatusNotFound)
+		return
+	}
 
-	defer ffb.removeFileResources(authToken)
+	// 如果是浏览器请求，返回下载页面而不是直接下载
+	if isBrowserRequest(r) {
+		ffb.serveDownloadPage(w, r, authToken, metadata)
+		return
+	}
 
-	// 检查文件状态 - 允许"registered"状态的文件开始下载
+	ffb.mu.Lock()
+	metadata, exists = ffb.fileRegistry[authToken]
+	isCompleted = ffb.downloadCompleted[authToken]
+	if !exists {
+		ffb.mu.Unlock()
+		http.Error(w, "文件不存在", http.StatusNotFound)
+		return
+	}
+	if isCompleted {
+		ffb.mu.Unlock()
+		http.Error(w, "文件下载已完成，资源已释放", http.StatusGone)
+		return
+	}
+	if metadata.Status == "downloading" {
+		ffb.mu.Unlock()
+		http.Error(w, "文件正在下载中", http.StatusConflict)
+		return
+	}
 	if metadata.Status != "streaming" && metadata.Status != "registered" {
+		ffb.mu.Unlock()
 		http.Error(w, "文件尚未准备好下载", http.StatusServiceUnavailable)
 		return
 	}
+	previousStatus := metadata.Status
+	metadata.Status = "downloading"
+	ffb.mu.Unlock()
 
 	// 检查流是否可用，如果不可用则等待一段时间
 	var streamConn interface{}
@@ -1013,10 +1127,17 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 	}
 
 	if !exists1 {
+		ffb.mu.Lock()
+		if meta, ok := ffb.fileRegistry[authToken]; ok && !ffb.downloadCompleted[authToken] {
+			meta.Status = previousStatus
+		}
+		ffb.mu.Unlock()
 		log.Printf("⚠️ 文件源不可用，可能流连接尚未建立: %s", authToken)
 		http.Error(w, "文件源不可用", http.StatusServiceUnavailable)
 		return
 	}
+
+	defer ffb.removeFileResources(authToken)
 
 	// 准备响应头
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -1043,9 +1164,9 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 	if tcpConn, ok := streamConn.(*StreamConnection); ok {
 		reader = tcpConn.Reader
 		conn = tcpConn.Conn
-		// 设置合理的读取超时（5分钟）
+		// 发送端异常断开时尽快回收资源，同时不影响正常连续传输
 		if conn != nil {
-			conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+			conn.SetReadDeadline(time.Now().Add(tcpStreamReadTimeout))
 		}
 	} else if wsConn, ok := streamConn.(*WebSocketStreamConnection); ok {
 		reader = wsConn
@@ -1054,10 +1175,10 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 		// 这将触发上传端开始发送数据
 		request := map[string]interface{}{
 			"command": "download_started", // 通知上传端下载已开始
-			"offset":  0,                 // 从开头开始
+			"offset":  0,                  // 从开头开始
 			"size":    metadata.Size,      // 请求整个文件
 		}
-		err := wsConn.Conn.WriteJSON(request)
+		err := wsConn.writeJSON(request)
 		if err != nil {
 			log.Printf("发送下载开始通知失败: %v", err)
 		} else {
@@ -1070,8 +1191,13 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 			"offset":  0,             // 从开头开始
 			"size":    metadata.Size, // 请求整个文件
 		}
-		err = wsConn.Conn.WriteJSON(request)
+		err = wsConn.writeJSON(request)
 		if err != nil {
+			ffb.mu.Lock()
+			if meta, ok := ffb.fileRegistry[authToken]; ok && !ffb.downloadCompleted[authToken] {
+				meta.Status = previousStatus
+			}
+			ffb.mu.Unlock()
 			log.Printf("发送数据请求失败: %v", err)
 			http.Error(w, "无法从上传端请求数据", http.StatusInternalServerError)
 			return
@@ -1104,7 +1230,7 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 				}
 				// Attempt to send stop command but don't fail if connection is closed
 				if wsConn.Conn != nil {
-					err := wsConn.Conn.WriteJSON(stopRequest)
+					err := wsConn.writeJSON(stopRequest)
 					if err != nil {
 						log.Printf("无法发送停止上传命令: %v", err)
 					}
@@ -1121,13 +1247,8 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 
 			// 检查是否是超时错误
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				log.Printf("⚠️ 读取超时，但继续尝试: %v", err)
-
-				// 重置超时并继续尝试
-				if conn != nil {
-					conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
-				}
-				continue
+				log.Printf("⚠️ 读取超时，判定传输中断: %v", err)
+				break
 			}
 
 			ffb.handleStreamError(authToken, err, conn)
@@ -1148,7 +1269,7 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 				}
 				// Attempt to send stop command but don't fail if connection is closed
 				if wsConn.Conn != nil {
-					err := wsConn.Conn.WriteJSON(stopRequest)
+					err := wsConn.writeJSON(stopRequest)
 					if err != nil {
 						log.Printf("无法发送停止上传命令: %v", err)
 					}
@@ -1167,7 +1288,7 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 				}
 				// Attempt to send stop command but don't fail if connection is closed
 				if wsConn.Conn != nil {
-					err := wsConn.Conn.WriteJSON(stopRequest)
+					err := wsConn.writeJSON(stopRequest)
 					if err != nil {
 						log.Printf("无法发送停止上传命令: %v", err)
 					}
@@ -1198,19 +1319,22 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 
 		// 每次成功读取后重置超时
 		if conn != nil {
-			conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+			conn.SetReadDeadline(time.Now().Add(tcpStreamReadTimeout))
 		}
 	}
 
-	// 传输完成
+	transferCompleted := metadata.Size == 0 || totalTransferred >= metadata.Size
 	transferTime := time.Since(startTime).Seconds()
 	ffb.mu.Lock()
-	ffb.serverStats.FilesTransferred++
 	ffb.serverStats.BytesTransferred += localChunk
-	ffb.downloadCompleted[authToken] = true
+	if transferCompleted {
+		ffb.serverStats.FilesTransferred++
+		ffb.downloadCompleted[authToken] = true
+		ffb.downloadCompletedAt[authToken] = time.Now()
+	}
 	ffb.mu.Unlock()
 
-	if transferTime > 0 {
+	if transferCompleted && transferTime > 0 {
 		sizeMiB := float64(totalTransferred) / (1024 * 1024)
 		speedValue := float64(totalTransferred) / transferTime / 1024
 		speedUnit := "KiB/s"
@@ -1229,29 +1353,36 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 		)
 	}
 
+	if !transferCompleted {
+		log.Printf("⚠️ 传输未完成: %s (token_id: %s), 已传输: %d / %d",
+			metadata.OriginalFilename,
+			authToken,
+			totalTransferred,
+			metadata.Size,
+		)
+	}
+
 	// 通知上传端传输已完成
 	if conn, exists := ffb.activeStreams[authToken]; exists {
 		if tcpConn, ok := conn.(*StreamConnection); ok && tcpConn.Conn != nil {
 			tcpConn.Conn.Close()
 			log.Printf("🔌 关闭已完成文件的TCP连接: %s (token_id: %s)", metadata.OriginalFilename, authToken)
 		} else if wsConn, ok := conn.(*WebSocketStreamConnection); ok {
-			// 发送传输完成通知给WebSocket连接
-			notification := map[string]interface{}{
-				"command": "transfer_complete",
-				"message": "文件传输已完成",
-			}
-
-			// 检查WebSocket连接是否仍然开放
-			if wsConn.Conn != nil {
-				// 尝试发送传输完成通知
-				err := wsConn.Conn.WriteJSON(notification)
-				if err != nil {
-					log.Printf("发送传输完成通知失败: %v", err)
-				} else {
-					log.Printf("✅ 已通知上传端传输完成: %s", authToken)
+			if transferCompleted {
+				notification := map[string]interface{}{
+					"command": "transfer_complete",
+					"message": "文件传输已完成",
 				}
-			} else {
-				log.Printf("WebSocket连接已关闭，无法发送传输完成通知: %s", authToken)
+				if wsConn.Conn != nil {
+					err := wsConn.writeJSON(notification)
+					if err != nil {
+						log.Printf("发送传输完成通知失败: %v", err)
+					} else {
+						log.Printf("✅ 已通知上传端传输完成: %s", authToken)
+					}
+				} else {
+					log.Printf("WebSocket连接已关闭，无法发送传输完成通知: %s", authToken)
+				}
 			}
 
 			if wsConn.Conn != nil {
@@ -1264,7 +1395,101 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 		log.Printf("⚠️ 传输完成时未找到活动连接: %s", authToken)
 	}
 
-	log.Printf("🏁 文件标记为已完成: %s (token_id: %s)", metadata.OriginalFilename, authToken)
+	if transferCompleted {
+		log.Printf("🏁 文件标记为已完成: %s (token_id: %s)", metadata.OriginalFilename, authToken)
+	}
+}
+
+// 服务下载页面
+func (ffb *FileFlowBridge) serveDownloadPage(w http.ResponseWriter, r *http.Request, authToken string, metadata *FileMetadata) {
+	// 读取下载页面模板
+	templatePath := "./static/download.html"
+	if _, err := os.Stat(templatePath); os.IsNotExist(err) {
+		// 如果模板不存在，返回简单的提示页面
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `
+<!DOCTYPE html>
+<html>
+<head>
+	<title>文件下载 - FileFlow Bridge</title>
+	<meta charset="utf-8">
+	<style>
+		body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #f5f5f5; }
+		.container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: inline-block; }
+		button { background: #4CAF50; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 10px; cursor: pointer; border: none; border-radius: 5px; }
+		button:hover { background: #45a049; }
+		.info { margin: 20px 0; }
+	</style>
+</head>
+<body>
+	<div class="container">
+		<h1>📥 文件下载</h1>
+		<div class="info">
+			<p><strong>文件名:</strong> %s</p>
+			<p><strong>文件大小:</strong> %.2f MB</p>
+			<p><strong>文件ID:</strong> %s</p>
+		</div>
+		<p>点击下方按钮开始下载:</p>
+		<a href="/download/%s/%s" download><button>点击下载</button></a>
+		<br>
+		<a href="/download/%s/%s">直接下载链接</a>
+	</div>
+</body>
+</html>`,
+			html.EscapeString(metadata.OriginalFilename),
+			float64(metadata.Size)/(1024*1024),
+			authToken,
+			authToken,
+			url.PathEscape(metadata.OriginalFilename),
+			authToken,
+			url.PathEscape(metadata.OriginalFilename))
+		return
+	}
+
+	// 读取模板文件
+	content, err := os.ReadFile(templatePath)
+	if err != nil {
+		log.Printf("读取下载页面模板失败: %v", err)
+		http.Error(w, "内部服务器错误", http.StatusInternalServerError)
+		return
+	}
+
+	// Format file size in human-readable format
+	formattedSize := formatFileSize(metadata.Size)
+
+	// 替换模板中的占位符
+	templateContent := string(content)
+	templateContent = strings.ReplaceAll(templateContent, "{{FILENAME}}", url.PathEscape(metadata.OriginalFilename))
+	templateContent = strings.ReplaceAll(templateContent, "{{FILESIZE_HUMAN}}", formattedSize)
+	templateContent = strings.ReplaceAll(templateContent, "{{FILESIZE_RAW}}", strconv.FormatInt(metadata.Size, 10))
+	templateContent = strings.ReplaceAll(templateContent, "{{ORIGINAL_FILENAME}}", html.EscapeString(metadata.OriginalFilename))
+	templateContent = strings.ReplaceAll(templateContent, "{{TOKEN}}", authToken)
+
+	// 设置响应头
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// 输出替换后的页面内容
+	fmt.Fprint(w, templateContent)
+}
+
+// Helper function to format file size in human-readable format
+func formatFileSize(size int64) string {
+	if size <= 0 {
+		return "0 B"
+	}
+
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+
+	return fmt.Sprintf("%.2f %cB", float64(size)/float64(div), "KMGTPE"[exp])
 }
 
 // 检查文件状态
@@ -1350,27 +1575,48 @@ func (ffb *FileFlowBridge) cleanupResources() {
 			if ffb.isShuttingDown {
 				return
 			}
-
-			currentTime := time.Now()
-			var expiredFiles []string
-
-			ffb.mu.RLock()
-			for authToken, metadata := range ffb.fileRegistry {
-				if metadata.ExpiresAt.Before(currentTime) {
-					expiredFiles = append(expiredFiles, authToken)
-				}
-			}
-			ffb.mu.RUnlock()
-
-			for _, authToken := range expiredFiles {
-				ffb.removeFileResources(authToken)
-				log.Printf("🧹 清理过期文件: %s", authToken)
-			}
+			ffb.cleanupExpiredFiles(time.Now())
 
 		case <-ffb.ShutdownEvent:
 			return
 		}
 	}
+}
+
+// 单次清理已过期文件，便于测试与定时任务复用
+func (ffb *FileFlowBridge) cleanupExpiredFiles(currentTime time.Time) []string {
+	var expiredFiles []string
+	var completedTokens []string
+
+	ffb.mu.RLock()
+	for authToken, metadata := range ffb.fileRegistry {
+		if metadata.ExpiresAt.Before(currentTime) {
+			expiredFiles = append(expiredFiles, authToken)
+		}
+	}
+	for authToken, completedAt := range ffb.downloadCompletedAt {
+		if currentTime.Sub(completedAt) >= completedDownloadTTL {
+			completedTokens = append(completedTokens, authToken)
+		}
+	}
+	ffb.mu.RUnlock()
+
+	for _, authToken := range expiredFiles {
+		ffb.removeFileResources(authToken)
+		log.Printf("🧹 清理过期文件: %s", authToken)
+	}
+
+	if len(completedTokens) > 0 {
+		ffb.mu.Lock()
+		for _, authToken := range completedTokens {
+			delete(ffb.downloadCompleted, authToken)
+			delete(ffb.downloadCompletedAt, authToken)
+			log.Printf("🧹 清理下载完成标记: %s", authToken)
+		}
+		ffb.mu.Unlock()
+	}
+
+	return expiredFiles
 }
 
 // 移除文件资源
@@ -1392,7 +1638,10 @@ func (ffb *FileFlowBridge) removeFileResources(authToken string) {
 	}
 
 	// 移除下载完成标记
-	delete(ffb.downloadCompleted, authToken)
+	if !ffb.downloadCompleted[authToken] {
+		delete(ffb.downloadCompleted, authToken)
+		delete(ffb.downloadCompletedAt, authToken)
+	}
 
 	log.Printf("🗑️ 文件资源已清理: %s", authToken)
 }

@@ -39,14 +39,15 @@ func createEnhancedTestSuite(t *testing.T) *EnhancedTestSuite {
 
 	// Create test bridge server
 	ffb := &FileFlowBridge{
-		HTTPPort:          0, // Use random port
-		TCPPort:           0, // Use random port
-		MaxFileSize:       100 * 1024 * 1024, // 100MB
-		TokenLength:       8,
-		ShutdownEvent:     make(chan struct{}),
-		fileRegistry:      make(map[string]*FileMetadata),
-		activeStreams:     make(map[string]interface{}),
-		downloadCompleted: make(map[string]bool),
+		HTTPPort:            0,                 // Use random port
+		TCPPort:             0,                 // Use random port
+		MaxFileSize:         100 * 1024 * 1024, // 100MB
+		TokenLength:         8,
+		ShutdownEvent:       make(chan struct{}),
+		fileRegistry:        make(map[string]*FileMetadata),
+		activeStreams:       make(map[string]interface{}),
+		downloadCompleted:   make(map[string]bool),
+		downloadCompletedAt: make(map[string]time.Time),
 		serverStats: ServerStats{
 			StartTime: time.Now(),
 		},
@@ -738,6 +739,335 @@ func TestEnhancedConnectionInterruption(t *testing.T) {
 	wsConn.Close()
 
 	t.Log("Connection interruption test passed")
+}
+
+func TestEnhancedAbandonedWebSocketUploadCleanup(t *testing.T) {
+	suite := createEnhancedTestSuite(t)
+	defer suite.cleanup()
+
+	testFile := suite.createTestFile("abandon_test.txt", "abandon upload content")
+	fileInfo, err := os.Stat(testFile)
+	if err != nil {
+		t.Fatalf("Failed to get file info: %v", err)
+	}
+
+	payload := map[string]interface{}{
+		"filename": filepath.Base(testFile),
+		"size":     fileInfo.Size(),
+	}
+
+	jsonPayload, _ := json.Marshal(payload)
+	resp, err := http.Post(suite.bridgeURL+"/register", "application/json", bytes.NewReader(jsonPayload))
+	if err != nil {
+		t.Fatalf("Registration failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var registerResp struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&registerResp); err != nil {
+		t.Fatalf("Failed to decode registration response: %v", err)
+	}
+
+	wsURL := strings.Replace(suite.bridgeURL, "http", "ws", 1) + "/ws/" + registerResp.AuthToken
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket connection failed: %v", err)
+	}
+
+	if _, _, err := wsConn.ReadMessage(); err != nil {
+		t.Fatalf("Failed to read READY message: %v", err)
+	}
+
+	wsConn.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	statusResp, err := http.Get(suite.bridgeURL + "/status/" + registerResp.AuthToken)
+	if err != nil {
+		t.Fatalf("Status request failed: %v", err)
+	}
+	defer statusResp.Body.Close()
+
+	if statusResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Expected status 404 after abandoned upload, got: %d", statusResp.StatusCode)
+	}
+}
+
+func TestEnhancedConcurrentDownloadRejection(t *testing.T) {
+	suite := createEnhancedTestSuite(t)
+	defer suite.cleanup()
+
+	testFile := suite.createTestFile("concurrent_download.txt", "concurrent websocket content")
+	fileContent, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("Failed to read test file: %v", err)
+	}
+
+	payload := map[string]interface{}{
+		"filename": filepath.Base(testFile),
+		"size":     int64(len(fileContent)),
+	}
+
+	jsonPayload, _ := json.Marshal(payload)
+	resp, err := http.Post(suite.bridgeURL+"/register", "application/json", bytes.NewReader(jsonPayload))
+	if err != nil {
+		t.Fatalf("Registration failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var registerResp struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&registerResp); err != nil {
+		t.Fatalf("Failed to decode registration response: %v", err)
+	}
+
+	wsURL := strings.Replace(suite.bridgeURL, "http", "ws", 1) + "/ws/" + registerResp.AuthToken
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket connection failed: %v", err)
+	}
+	defer wsConn.Close()
+
+	if _, _, err := wsConn.ReadMessage(); err != nil {
+		t.Fatalf("Failed to read READY message: %v", err)
+	}
+
+	if err := wsConn.WriteMessage(websocket.BinaryMessage, fileContent); err != nil {
+		t.Fatalf("Failed to send file data: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	type result struct {
+		status int
+		body   string
+	}
+
+	results := make(chan result, 2)
+	downloadURL := suite.bridgeURL + "/download/" + registerResp.AuthToken
+
+	for i := 0; i < 2; i++ {
+		go func() {
+			downloadResp, err := http.Get(downloadURL)
+			if err != nil {
+				results <- result{status: -1, body: err.Error()}
+				return
+			}
+			defer downloadResp.Body.Close()
+
+			body, _ := io.ReadAll(downloadResp.Body)
+			results <- result{status: downloadResp.StatusCode, body: string(body)}
+		}()
+	}
+
+	first := <-results
+	second := <-results
+
+	statuses := map[int]int{
+		first.status:  1,
+		second.status: 1,
+	}
+	statuses[first.status]++
+	statuses[second.status]++
+
+	if first.status != http.StatusOK && second.status != http.StatusOK {
+		t.Fatalf("Expected one successful download, got statuses %d and %d", first.status, second.status)
+	}
+
+	if first.status == http.StatusInternalServerError || second.status == http.StatusInternalServerError {
+		t.Fatalf("Expected no server error, got statuses %d and %d", first.status, second.status)
+	}
+
+	if first.status != http.StatusConflict && first.status != http.StatusGone &&
+		second.status != http.StatusConflict && second.status != http.StatusGone {
+		t.Fatalf("Expected one rejected concurrent download, got statuses %d and %d", first.status, second.status)
+	}
+}
+
+func TestEnhancedCompletedDownloadReturnsGone(t *testing.T) {
+	suite := createEnhancedTestSuite(t)
+	defer suite.cleanup()
+
+	testFile := suite.createTestFile("gone_after_complete.txt", "gone response content")
+	fileContent, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("Failed to read test file: %v", err)
+	}
+
+	payload := map[string]interface{}{
+		"filename": filepath.Base(testFile),
+		"size":     int64(len(fileContent)),
+	}
+
+	jsonPayload, _ := json.Marshal(payload)
+	resp, err := http.Post(suite.bridgeURL+"/register", "application/json", bytes.NewReader(jsonPayload))
+	if err != nil {
+		t.Fatalf("Registration failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var registerResp struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&registerResp); err != nil {
+		t.Fatalf("Failed to decode registration response: %v", err)
+	}
+
+	wsURL := strings.Replace(suite.bridgeURL, "http", "ws", 1) + "/ws/" + registerResp.AuthToken
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket connection failed: %v", err)
+	}
+	defer wsConn.Close()
+
+	if _, _, err := wsConn.ReadMessage(); err != nil {
+		t.Fatalf("Failed to read READY message: %v", err)
+	}
+
+	if err := wsConn.WriteMessage(websocket.BinaryMessage, fileContent); err != nil {
+		t.Fatalf("Failed to send file data: %v", err)
+	}
+
+	downloadURL := suite.bridgeURL + "/download/" + registerResp.AuthToken
+	firstResp, err := http.Get(downloadURL)
+	if err != nil {
+		t.Fatalf("First download request failed: %v", err)
+	}
+	defer firstResp.Body.Close()
+
+	if _, err := io.ReadAll(firstResp.Body); err != nil {
+		t.Fatalf("Failed to read first download body: %v", err)
+	}
+
+	secondResp, err := http.Get(downloadURL)
+	if err != nil {
+		t.Fatalf("Second download request failed: %v", err)
+	}
+	defer secondResp.Body.Close()
+
+	if secondResp.StatusCode != http.StatusGone {
+		t.Fatalf("Expected 410 after completed download, got: %d", secondResp.StatusCode)
+	}
+}
+
+func TestEnhancedWebSocketSlowConsumerLargeTransfer(t *testing.T) {
+	suite := createEnhancedTestSuite(t)
+	defer suite.cleanup()
+
+	const fileSize = 12 * 1024 * 1024
+	fileContent := bytes.Repeat([]byte("slow-consumer-websocket-test-"), fileSize/len("slow-consumer-websocket-test-")+1)
+	fileContent = fileContent[:fileSize]
+
+	payload := map[string]interface{}{
+		"filename": "slow_consumer_large.bin",
+		"size":     int64(len(fileContent)),
+	}
+
+	jsonPayload, _ := json.Marshal(payload)
+	resp, err := http.Post(suite.bridgeURL+"/register", "application/json", bytes.NewReader(jsonPayload))
+	if err != nil {
+		t.Fatalf("Registration failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var registerResp struct {
+		AuthToken string `json:"auth_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&registerResp); err != nil {
+		t.Fatalf("Failed to decode registration response: %v", err)
+	}
+
+	wsURL := strings.Replace(suite.bridgeURL, "http", "ws", 1) + "/ws/" + registerResp.AuthToken
+	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket connection failed: %v", err)
+	}
+	defer wsConn.Close()
+
+	if _, _, err := wsConn.ReadMessage(); err != nil {
+		t.Fatalf("Failed to read READY message: %v", err)
+	}
+
+	sendDone := make(chan error, 1)
+	go func() {
+		for {
+			messageType, message, err := wsConn.ReadMessage()
+			if err != nil {
+				sendDone <- err
+				return
+			}
+
+			if messageType != websocket.TextMessage {
+				continue
+			}
+
+			var cmd map[string]interface{}
+			if err := json.Unmarshal(message, &cmd); err != nil {
+				sendDone <- err
+				return
+			}
+
+			switch cmd["command"] {
+			case "send_chunk":
+				offset := int(cmd["offset"].(float64))
+				size := int(cmd["size"].(float64))
+				end := offset + size
+				if end > len(fileContent) {
+					end = len(fileContent)
+				}
+				for i := offset; i < end; i += 64 * 1024 {
+					chunkEnd := i + 64*1024
+					if chunkEnd > end {
+						chunkEnd = end
+					}
+					if err := wsConn.WriteMessage(websocket.BinaryMessage, fileContent[i:chunkEnd]); err != nil {
+						sendDone <- err
+						return
+					}
+				}
+			case "transfer_complete":
+				sendDone <- nil
+				return
+			}
+		}
+	}()
+
+	downloadResp, err := http.Get(suite.bridgeURL + "/download/" + registerResp.AuthToken)
+	if err != nil {
+		t.Fatalf("Download request failed: %v", err)
+	}
+	defer downloadResp.Body.Close()
+
+	if downloadResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(downloadResp.Body)
+		t.Fatalf("Download failed, status: %d, body: %s", downloadResp.StatusCode, string(body))
+	}
+
+	var downloaded bytes.Buffer
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := downloadResp.Body.Read(buf)
+		if n > 0 {
+			downloaded.Write(buf[:n])
+			time.Sleep(50 * time.Millisecond)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Failed reading slow download body: %v", err)
+		}
+	}
+
+	if err := <-sendDone; err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		t.Fatalf("WebSocket sender exited with error: %v", err)
+	}
+
+	if !bytes.Equal(downloaded.Bytes(), fileContent) {
+		t.Fatalf("Downloaded content mismatch: got %d bytes want %d", downloaded.Len(), len(fileContent))
+	}
 }
 
 // Performance benchmark test

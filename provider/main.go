@@ -24,31 +24,31 @@ import (
 
 // FileInfo 文件信息结构体
 type FileInfo struct {
-	Path	 string
-	Name	 string
-	Size	 int64
-	ModTime  int64
+	Path    string
+	Name    string
+	Size    int64
+	ModTime int64
 }
 
 // RegisterResponse 注册文件响应结构体
 type RegisterResponse struct {
-	AuthToken	   string `json:"auth_token"`
-	DownloadURL	 string `json:"download_url"`
+	AuthToken        string `json:"auth_token"`
+	DownloadURL      string `json:"download_url"`
 	OriginalFilename string `json:"original_filename"`
-	TcpEndpoint	 struct {
+	TcpEndpoint      struct {
 		Host string `json:"host"`
-		Port int	`json:"port"`
+		Port int    `json:"port"`
 	} `json:"tcp_endpoint"`
 }
 
 // FlowProvider 主客户端结构体
 type FlowProvider struct {
-	BridgeURL	string
-	AuthToken	string
-	TcpHost	  string
-	TcpPort	  int
-	FileInfo	 FileInfo
-	DownloadURL  string
+	BridgeURL   string
+	AuthToken   string
+	TcpHost     string
+	TcpPort     int
+	FileInfo    FileInfo
+	DownloadURL string
 }
 
 // ==================== 核心功能实现 ====================
@@ -69,9 +69,9 @@ func (f *FlowProvider) RegisterFile(filePath string) (*RegisterResponse, error) 
 	}
 
 	f.FileInfo = FileInfo{
-		Path:	filePath,
-		Name:	filepath.Base(filePath),
-		Size:	fileInfo.Size(),
+		Path:    filePath,
+		Name:    filepath.Base(filePath),
+		Size:    fileInfo.Size(),
 		ModTime: fileInfo.ModTime().Unix(),
 	}
 
@@ -79,7 +79,7 @@ func (f *FlowProvider) RegisterFile(filePath string) (*RegisterResponse, error) 
 	registerURL := fmt.Sprintf("%s/register", f.BridgeURL)
 	payload := map[string]interface{}{
 		"filename": f.FileInfo.Name,
-		"size":	 f.FileInfo.Size,
+		"size":     f.FileInfo.Size,
 	}
 
 	jsonPayload, err := json.Marshal(payload)
@@ -122,7 +122,7 @@ func (f *FlowProvider) RegisterFile(filePath string) (*RegisterResponse, error) 
 	if strings.Contains(f.TcpHost, ":") {
 		parts := strings.Split(f.TcpHost, ":")
 		if len(parts) > 1 {
-			f.TcpHost = parts[0]  // 只取主机名部分
+			f.TcpHost = parts[0] // 只取主机名部分
 			// 如果端口被错误地放在了host字段，可以尝试提取
 			if port, err := strconv.Atoi(parts[1]); err == nil && f.TcpPort == 0 {
 				f.TcpPort = port
@@ -140,6 +140,28 @@ func (f *FlowProvider) RegisterFile(filePath string) (*RegisterResponse, error) 
 	fmt.Println(result.DownloadURL)
 
 	return &result, nil
+}
+
+func waitForTransferCompletion(conn net.Conn, timeout time.Duration) error {
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("设置等待超时失败: %v", err)
+	}
+	defer conn.SetReadDeadline(time.Time{})
+
+	buf := make([]byte, 1)
+	for {
+		_, err := conn.Read(buf)
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return fmt.Errorf("等待下载完成超时: %w", err)
+		}
+		return fmt.Errorf("等待下载完成失败: %v", err)
+	}
 }
 
 // EstablishStreamConnection 建立TCP流连接并传输文件
@@ -160,7 +182,7 @@ func (f *FlowProvider) EstablishStreamConnection() error {
 	// 发送连接元数据
 	meta := map[string]string{
 		"auth_token": f.AuthToken,
-		"filename":  f.FileInfo.Name,
+		"filename":   f.FileInfo.Name,
 	}
 	metaJSON, _ := json.Marshal(meta)
 	if _, err := conn.Write(append(metaJSON, '\n')); err != nil {
@@ -181,6 +203,11 @@ func (f *FlowProvider) EstablishStreamConnection() error {
 
 	// 传输文件内容
 	if err := f.streamFileContent(conn); err != nil {
+		return err
+	}
+
+	fmt.Println("⏳ 文件已上传，等待下载端完成...")
+	if err := waitForTransferCompletion(conn, 2*time.Hour); err != nil {
 		return err
 	}
 
@@ -283,7 +310,7 @@ func (f *FlowProvider) GenerateDownloadInfo() string {
 	size := float64(f.FileInfo.Size)
 	unit := "Bytes"
 	units := []string{"Bytes", "KiB", "MiB", "GiB", "TiB"}
-	
+
 	i := 0
 	for size >= 1024 && i < len(units)-1 {
 		size /= 1024
@@ -309,16 +336,17 @@ func (f *FlowProvider) GenerateDownloadInfo() string {
 💡 提示: 请确保发送端保持运行，直到下载完成。
 `, f.FileInfo.Name, sizeStr, f.DownloadURL)
 }
+
 // ==================== 进度条实现 ====================
 
 // ProgressBar 简单的进度条实现
 type ProgressBar struct {
-	Total	 int64
+	Total     int64
 	Current   int64
-	Desc	  string
-	Units	 []string
+	Desc      string
+	Units     []string
 	lastPrint time.Time
-	mu		sync.Mutex
+	mu        sync.Mutex
 }
 
 // Set 更新当前进度
@@ -368,14 +396,15 @@ func (p *ProgressBar) Finish() {
 
 	// 格式化字符串：5个占位符对应5个参数
 	fmt.Printf("\r%s [%-50s] 100.0%% (%.2f %s / %.2f %s)\n",
-		p.Desc,				  // %s：描述文字（如 "上传中"）
+		p.Desc,                  // %s：描述文字（如 "上传中"）
 		strings.Repeat("=", 50), // %-50s：50个等号填满进度条
-		currentSize,			 // %.2f：当前大小数值（完成时=总大小）
-		currentUnit,			 // %s：当前单位（如 MiB/GiB）
-		totalSize,			   // %.2f：总大小数值
-		totalUnit,				// %s：总单位（如 MiB/GiB）
+		currentSize,             // %.2f：当前大小数值（完成时=总大小）
+		currentUnit,             // %s：当前单位（如 MiB/GiB）
+		totalSize,               // %.2f：总大小数值
+		totalUnit,               // %s：总单位（如 MiB/GiB）
 	)
 }
+
 // getHumanSize 转换为人类可读的大小单位
 func (p *ProgressBar) getHumanSize(bytes int64) (float64, string) {
 	size := float64(bytes)

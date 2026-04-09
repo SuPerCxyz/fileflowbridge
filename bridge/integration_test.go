@@ -39,14 +39,15 @@ func createIntegrationTestSuite(t *testing.T) *IntegrationTestSuite {
 
 	// 创建测试桥接服务器
 	ffb := &FileFlowBridge{
-		HTTPPort:          0, // 使用随机端口
-		TCPPort:           0, // 使用随机端口
-		MaxFileSize:       100,
-		TokenLength:       8,
-		ShutdownEvent:     make(chan struct{}),
-		fileRegistry:      make(map[string]*FileMetadata),
-		activeStreams:     make(map[string]interface{}),
-		downloadCompleted: make(map[string]bool),
+		HTTPPort:            0, // 使用随机端口
+		TCPPort:             0, // 使用随机端口
+		MaxFileSize:         100,
+		TokenLength:         8,
+		ShutdownEvent:       make(chan struct{}),
+		fileRegistry:        make(map[string]*FileMetadata),
+		activeStreams:       make(map[string]interface{}),
+		downloadCompleted:   make(map[string]bool),
+		downloadCompletedAt: make(map[string]time.Time),
 		serverStats: ServerStats{
 			StartTime: time.Now(),
 		},
@@ -501,7 +502,7 @@ func TestFileExpiration(t *testing.T) {
 	}
 
 	// 执行清理
-	suite.bridge.cleanupResources()
+	suite.bridge.cleanupExpiredFiles(time.Now())
 
 	// 验证过期文件被清理
 	if _, exists := suite.bridge.fileRegistry[expiredToken]; exists {

@@ -10,18 +10,22 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/gorilla/mux"
 )
 
 // 创建测试用的FileFlowBridge实例
 func createTestBridge() *FileFlowBridge {
 	return &FileFlowBridge{
-		HTTPPort:      8000,
-		TCPPort:       8888,
-		MaxFileSize:   100,
-		TokenLength:   8,
-		ShutdownEvent: make(chan struct{}),
-		fileRegistry:  make(map[string]*FileMetadata),
-		activeStreams: make(map[string]interface{}),
+		HTTPPort:            8000,
+		TCPPort:             8888,
+		MaxFileSize:         100 * 1024 * 1024,
+		TokenLength:         8,
+		ShutdownEvent:       make(chan struct{}),
+		fileRegistry:        make(map[string]*FileMetadata),
+		activeStreams:       make(map[string]interface{}),
+		downloadCompleted:   make(map[string]bool),
+		downloadCompletedAt: make(map[string]time.Time),
 	}
 }
 
@@ -90,6 +94,7 @@ func TestStatusCheck(t *testing.T) {
 	// 创建状态查询请求
 	req := httptest.NewRequest("GET", "/status/"+testToken, nil)
 	req.RemoteAddr = "127.0.0.1:12345"
+	req = mux.SetURLVars(req, map[string]string{"auth_token": testToken})
 	w := httptest.NewRecorder()
 
 	// 调用处理器
@@ -166,7 +171,7 @@ func TestFileExpirationCleanup(t *testing.T) {
 	}
 
 	// 执行清理
-	ffb.cleanupResources()
+	ffb.cleanupExpiredFiles(time.Now())
 
 	// 验证过期文件被删除
 	if _, exists := ffb.fileRegistry[expiredToken]; exists {
