@@ -106,8 +106,8 @@ var upgrader = websocket.Upgrader{
 }
 
 const (
-	tcpStreamReadTimeout     = 5 * time.Second
-	connectionHealthInterval = 5 * time.Second
+	tcpStreamReadTimeout     = 2 * time.Second
+	connectionHealthInterval = 2 * time.Second
 	completedDownloadTTL     = 1 * time.Minute
 )
 

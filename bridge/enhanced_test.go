@@ -798,14 +798,10 @@ func TestEnhancedConcurrentDownloadRejection(t *testing.T) {
 	suite := createEnhancedTestSuite(t)
 	defer suite.cleanup()
 
-	testFile := suite.createTestFile("concurrent_download.txt", "concurrent websocket content")
-	fileContent, err := os.ReadFile(testFile)
-	if err != nil {
-		t.Fatalf("Failed to read test file: %v", err)
-	}
+	fileContent := bytes.Repeat([]byte("concurrent-websocket-download-"), 512*1024)
 
 	payload := map[string]interface{}{
-		"filename": filepath.Base(testFile),
+		"filename": "concurrent_download.txt",
 		"size":     int64(len(fileContent)),
 	}
 
@@ -834,12 +830,6 @@ func TestEnhancedConcurrentDownloadRejection(t *testing.T) {
 		t.Fatalf("Failed to read READY message: %v", err)
 	}
 
-	if err := wsConn.WriteMessage(websocket.BinaryMessage, fileContent); err != nil {
-		t.Fatalf("Failed to send file data: %v", err)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
 	type result struct {
 		status int
 		body   string
@@ -848,41 +838,86 @@ func TestEnhancedConcurrentDownloadRejection(t *testing.T) {
 	results := make(chan result, 2)
 	downloadURL := suite.bridgeURL + "/download/" + registerResp.AuthToken
 
-	for i := 0; i < 2; i++ {
-		go func() {
-			downloadResp, err := http.Get(downloadURL)
+	go func() {
+		downloadResp, err := http.Get(downloadURL)
+		if err != nil {
+			results <- result{status: -1, body: err.Error()}
+			return
+		}
+		defer downloadResp.Body.Close()
+
+		body, _ := io.ReadAll(downloadResp.Body)
+		results <- result{status: downloadResp.StatusCode, body: string(body)}
+	}()
+
+	senderDone := make(chan error, 1)
+	go func() {
+		for {
+			messageType, message, err := wsConn.ReadMessage()
 			if err != nil {
-				results <- result{status: -1, body: err.Error()}
+				senderDone <- err
 				return
 			}
-			defer downloadResp.Body.Close()
 
-			body, _ := io.ReadAll(downloadResp.Body)
-			results <- result{status: downloadResp.StatusCode, body: string(body)}
-		}()
+			if messageType != websocket.TextMessage {
+				continue
+			}
+
+			var cmd map[string]interface{}
+			if err := json.Unmarshal(message, &cmd); err != nil {
+				senderDone <- err
+				return
+			}
+
+			switch cmd["command"] {
+			case "send_chunk":
+				offset := int(cmd["offset"].(float64))
+				size := int(cmd["size"].(float64))
+				end := offset + size
+				if end > len(fileContent) {
+					end = len(fileContent)
+				}
+
+				for i := offset; i < end; i += 64 * 1024 {
+					chunkEnd := i + 64*1024
+					if chunkEnd > end {
+						chunkEnd = end
+					}
+					if err := wsConn.WriteMessage(websocket.BinaryMessage, fileContent[i:chunkEnd]); err != nil {
+						senderDone <- err
+						return
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+			case "transfer_complete":
+				senderDone <- nil
+				return
+			}
+		}
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+
+	secondResp, err := http.Get(downloadURL)
+	if err != nil {
+		t.Fatalf("Second download request failed: %v", err)
 	}
+	defer secondResp.Body.Close()
 
+	secondBody, _ := io.ReadAll(secondResp.Body)
 	first := <-results
-	second := <-results
+	second := result{status: secondResp.StatusCode, body: string(secondBody)}
 
-	statuses := map[int]int{
-		first.status:  1,
-		second.status: 1,
-	}
-	statuses[first.status]++
-	statuses[second.status]++
-
-	if first.status != http.StatusOK && second.status != http.StatusOK {
-		t.Fatalf("Expected one successful download, got statuses %d and %d", first.status, second.status)
+	if first.status != http.StatusOK {
+		t.Fatalf("Expected first download to succeed, got status %d", first.status)
 	}
 
-	if first.status == http.StatusInternalServerError || second.status == http.StatusInternalServerError {
-		t.Fatalf("Expected no server error, got statuses %d and %d", first.status, second.status)
+	if second.status != http.StatusConflict {
+		t.Fatalf("Expected second concurrent download to return 409, got %d", second.status)
 	}
 
-	if first.status != http.StatusConflict && first.status != http.StatusGone &&
-		second.status != http.StatusConflict && second.status != http.StatusGone {
-		t.Fatalf("Expected one rejected concurrent download, got statuses %d and %d", first.status, second.status)
+	if err := <-senderDone; err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		t.Fatalf("WebSocket sender exited with error: %v", err)
 	}
 }
 
