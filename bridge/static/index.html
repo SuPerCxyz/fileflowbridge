@@ -488,6 +488,10 @@
                                 console.log('下载已开始');
                                 successMessage.innerHTML = `🔄 正在传输文件数据...`;
                                 downloadLink.style.display = 'none';
+                            } else if (message.command === 'progress') {
+                                // 按服务端实际转发字节更新进度，与下载端实收保持一致
+                                const realPercent = Math.min(100, (message.bytes / selectedFile.size) * 100);
+                                updateProgress(realPercent);
                             } else if (message.command === 'send_chunk') {
                                 // 服务器请求特定数据块，开始发送
                                 console.log('服务器请求数据块，开始发送文件数据...');
@@ -496,6 +500,8 @@
                             } else if (message.command === 'transfer_complete') {
                                 // 服务器通知传输已完成
                                 console.log('传输已完成');
+                                // 兜底：避免最后一个 progress 节流包丢失导致停在 99.x%
+                                updateProgress(100);
                                 successMessage.innerHTML = `✅ 文件传输完成！`;
                                 uploadInProgress = false;
                                 // 重新启用上传按钮
@@ -560,12 +566,21 @@
             // 分块发送文件 - 只发送指定范围的数据
             function sendFileInChunks(ws, file, offset = 0, size = file.size) {
                 const chunkSize = 64 * 1024; // 64KB chunks
+                // WebSocket 发送缓冲反压阈值：超过则暂停读取，
+                // 避免一次性把整个文件灌入浏览器内核缓冲导致内存膨胀和"假完成"
+                const backpressureBytes = 4 * 1024 * 1024;
                 let currentOffset = offset;
                 const end = Math.min(offset + size, file.size);
 
                 function readChunk() {
                     if (currentOffset >= end || ws.readyState !== WebSocket.OPEN) {
                         // 指定范围的数据发送完毕或WebSocket已关闭
+                        return;
+                    }
+
+                    // 反压：若浏览器尚未把已 send 的数据真正发出去，先等一会儿
+                    if (ws.bufferedAmount > backpressureBytes) {
+                        setTimeout(readChunk, 50);
                         return;
                     }
 
@@ -577,12 +592,9 @@
                         // 发送文件块
                         if (ws.readyState === WebSocket.OPEN) {
                             ws.send(e.target.result);
-
-                            // 更新进度 - 这里是整个文件的进度
                             currentOffset = chunkEnd;
-                            const percentComplete = Math.min(100, (currentOffset / file.size) * 100);
-                            updateProgress(percentComplete);
-
+                            // 进度不再按本地入队字节计算，
+                            // 改由服务端通过 progress 命令回报真实转发字节
                             // 继续发送下一块
                             setTimeout(readChunk, 0); // 异步处理，避免阻塞UI
                         }

@@ -1157,6 +1157,13 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 	var localChunk int64
 	buf := make([]byte, 256*1024)
 
+	// 用于向 WebSocket 上传端节流回报真实已转发字节，
+	// 解决浏览器上传进度按 ws.send() 入队字节计算导致的"虚假 100%"问题
+	const progressReportBytes = 256 * 1024
+	const progressReportInterval = 200 * time.Millisecond
+	var lastProgressReported int64
+	lastProgressTime := startTime
+
 	// 根据连接类型进行处理
 	var reader io.Reader
 	var conn net.Conn
@@ -1303,6 +1310,20 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 
 		totalTransferred += int64(n)
 		localChunk += int64(n)
+
+		// 节流向 WebSocket 上传端回报真实已转发字节，
+		// 上传页据此显示与下载端实收一致的进度
+		if wsConn, ok := streamConn.(*WebSocketStreamConnection); ok && wsConn.Conn != nil {
+			if totalTransferred-lastProgressReported >= progressReportBytes ||
+				time.Since(lastProgressTime) >= progressReportInterval {
+				_ = wsConn.writeJSON(map[string]interface{}{
+					"command": "progress",
+					"bytes":   totalTransferred,
+				})
+				lastProgressReported = totalTransferred
+				lastProgressTime = time.Now()
+			}
+		}
 
 		// 检查是否已传输完整个文件
 		if totalTransferred >= metadata.Size {
