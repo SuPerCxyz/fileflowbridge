@@ -1,2 +1,6 @@
 *log
 node_modules/
+
+# 本地构建产物
+/fileflowbridge
+/fileflowprovider
