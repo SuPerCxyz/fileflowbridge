@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint, Vet, Test (race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify modules tidy
+        run: |
+          go mod download
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: gofmt check
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not gofmt'd:"
+            echo "$unformatted"
+            gofmt -d $unformatted
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build bridge
+        run: go build -o /tmp/fileflowbridge ./bridge
+
+      - name: Build provider
+        run: go build -o /tmp/fileflowprovider ./provider
+
+      - name: Run tests with race detector
+        run: go test -race -count=1 -timeout 5m ./...

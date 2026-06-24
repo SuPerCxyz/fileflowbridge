@@ -2,8 +2,11 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	// "log"
@@ -11,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,16 +41,38 @@ type RegisterResponse struct {
 		Host string `json:"host"`
 		Port int    `json:"port"`
 	} `json:"tcp_endpoint"`
+
+	// v3 resumable 模式响应字段
+	Resumable      bool   `json:"resumable,omitempty"`
+	ChunkSize      int64  `json:"chunk_size,omitempty"`
+	TotalChunks    int    `json:"total_chunks,omitempty"`
+	ChunkUploadURL string `json:"chunk_upload_url,omitempty"`
+	ChunkStatusURL string `json:"chunk_status_url,omitempty"`
 }
 
 // FlowProvider 主客户端结构体
 type FlowProvider struct {
-	BridgeURL   string
-	AuthToken   string
-	TcpHost     string
-	TcpPort     int
-	FileInfo    FileInfo
-	DownloadURL string
+	BridgeURL    string
+	APIKey       string        // 可选，注册时携带 X-API-Key 头
+	SHA256       string        // 可选，注册时提交给桥（小写十六进制）
+	MaxDownloads int           // 当前 bridge 仅支持 0/1（single-shot）；> 1 会被拒绝
+	WaitTimeout  time.Duration // 上传完成后等下载者多久；0 = 默认 30 分钟
+
+	// resumable 模式
+	Resumable  bool  // 是否启用断点续传
+	ChunkSize  int64 // 想用的 chunk size，bridge 可能调整；0 = 8 MiB
+	UploadConc int   // resumable 上传时本端的并发；默认 4
+	MaxRetries int   // 单 chunk 失败后重试次数；默认 5
+
+	AuthToken       string
+	TcpHost         string
+	TcpPort         int
+	FileInfo        FileInfo
+	DownloadURL     string
+	chunkUploadURL  string
+	chunkStatusURL  string
+	actualChunkSize int64
+	totalChunks     int
 }
 
 // ==================== 核心功能实现 ====================
@@ -81,6 +105,18 @@ func (f *FlowProvider) RegisterFile(filePath string) (*RegisterResponse, error) 
 		"filename": f.FileInfo.Name,
 		"size":     f.FileInfo.Size,
 	}
+	if f.SHA256 != "" {
+		payload["sha256"] = f.SHA256
+	}
+	if f.MaxDownloads > 0 {
+		payload["max_downloads"] = f.MaxDownloads
+	}
+	if f.Resumable {
+		payload["resumable"] = true
+		if f.ChunkSize > 0 {
+			payload["chunk_size"] = f.ChunkSize
+		}
+	}
 
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
@@ -93,6 +129,9 @@ func (f *FlowProvider) RegisterFile(filePath string) (*RegisterResponse, error) 
 		return nil, fmt.Errorf("创建请求失败: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if f.APIKey != "" {
+		req.Header.Set("X-API-Key", f.APIKey)
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -117,27 +156,22 @@ func (f *FlowProvider) RegisterFile(filePath string) (*RegisterResponse, error) 
 	f.TcpHost = result.TcpEndpoint.Host
 	f.TcpPort = result.TcpEndpoint.Port
 	f.DownloadURL = result.DownloadURL
-
-	// 修复可能的多余端口号
-	if strings.Contains(f.TcpHost, ":") {
-		parts := strings.Split(f.TcpHost, ":")
-		if len(parts) > 1 {
-			f.TcpHost = parts[0] // 只取主机名部分
-			// 如果端口被错误地放在了host字段，可以尝试提取
-			if port, err := strconv.Atoi(parts[1]); err == nil && f.TcpPort == 0 {
-				f.TcpPort = port
-			}
+	if result.Resumable {
+		f.chunkUploadURL = result.ChunkUploadURL
+		f.chunkStatusURL = result.ChunkStatusURL
+		f.actualChunkSize = result.ChunkSize
+		f.totalChunks = result.TotalChunks
+		if f.actualChunkSize == 0 {
+			return nil, fmt.Errorf("服务器返回 resumable=true 但 chunk_size=0")
 		}
 	}
 
-	// 日志输出
-	// logger.Printf("✅ 文件注册成功")
-	// logger.Printf("📋 文件Token: %s", f.AuthToken)
-	// logger.Printf("🔑 认证令牌: %s", f.AuthToken)
-	// logger.Printf("🔌 TCP端点: %s:%d", f.TcpHost, f.TcpPort)
 	fmt.Println("📁 原始文件名:", result.OriginalFilename)
 	fmt.Println("🔗 点击或双击复制下载地址:")
 	fmt.Println(result.DownloadURL)
+	if result.Resumable {
+		fmt.Printf("🧩 Resumable: chunk_size=%d, total_chunks=%d\n", result.ChunkSize, result.TotalChunks)
+	}
 
 	return &result, nil
 }
@@ -207,7 +241,11 @@ func (f *FlowProvider) EstablishStreamConnection() error {
 	}
 
 	fmt.Println("⏳ 文件已上传，等待下载端完成...")
-	if err := waitForTransferCompletion(conn, 2*time.Hour); err != nil {
+	waitTimeout := f.WaitTimeout
+	if waitTimeout <= 0 {
+		waitTimeout = 30 * time.Minute
+	}
+	if err := waitForTransferCompletion(conn, waitTimeout); err != nil {
 		return err
 	}
 
@@ -246,19 +284,18 @@ func (f *FlowProvider) streamFileContent(conn net.Conn) error {
 	}
 	defer file.Close()
 
-	// 进度条实现
-	progress := &ProgressBar{
-		Total: f.FileInfo.Size,
-		Desc:  "📤 上传中",
-		Units: []string{"B", "KiB", "MiB", "GiB"},
-	}
+	// 进度条：使用构造函数初始化退出信号 channel
+	progress := NewProgressBar(f.FileInfo.Size, "📤 上传中", []string{"B", "KiB", "MiB", "GiB"})
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		progress.Print()
 	}()
+	// 无论后续是否出错都通知进度条退出并等待 goroutine 结束，避免泄漏
 	defer wg.Wait()
+	defer progress.Finish()
 
 	// 传输文件
 	buffer := make([]byte, 65536)
@@ -284,13 +321,11 @@ func (f *FlowProvider) streamFileContent(conn net.Conn) error {
 
 	// 计算传输统计
 	duration := time.Since(startTime)
-	// 计算每秒字节数
 	var bps float64
 	if duration.Seconds() > 0 {
 		bps = float64(transferred) / duration.Seconds()
 	}
 
-	progress.Finish()
 	fmt.Printf(
 		"📊 传输统计: %s, 耗时 %.2f 秒, 平均速度: %s\n",
 		FormatSize(transferred),
@@ -340,6 +375,13 @@ func (f *FlowProvider) GenerateDownloadInfo() string {
 // ==================== 进度条实现 ====================
 
 // ProgressBar 简单的进度条实现
+//
+// 使用方式：
+//
+//	pb := NewProgressBar(total, desc, units)
+//	go pb.Print()
+//	... pb.Set(n) ...
+//	pb.Finish() // 必须调用，否则 Print 协程不会退出
 type ProgressBar struct {
 	Total     int64
 	Current   int64
@@ -347,6 +389,18 @@ type ProgressBar struct {
 	Units     []string
 	lastPrint time.Time
 	mu        sync.Mutex
+	done      chan struct{}
+	doneOnce  sync.Once
+}
+
+// NewProgressBar 构造一个 ProgressBar，并初始化退出信号
+func NewProgressBar(total int64, desc string, units []string) *ProgressBar {
+	return &ProgressBar{
+		Total: total,
+		Desc:  desc,
+		Units: units,
+		done:  make(chan struct{}),
+	}
 }
 
 // Set 更新当前进度
@@ -356,52 +410,71 @@ func (p *ProgressBar) Set(current int64) {
 	p.Current = current
 }
 
-// Print 打印进度条
+// Print 打印进度条，直到 Finish 被调用或进度满
 func (p *ProgressBar) Print() {
 	ticker := time.NewTicker(500 * time.Millisecond) // 每500ms更新一次
 	defer ticker.Stop()
 
-	for range ticker.C {
-		p.mu.Lock()
-		if p.Current >= p.Total {
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			if p.Total > 0 && p.Current >= p.Total {
+				p.mu.Unlock()
+				return
+			}
+
+			if p.Total <= 0 {
+				p.mu.Unlock()
+				continue
+			}
+
+			// 计算百分比和单位
+			percent := float64(p.Current) / float64(p.Total) * 100
+			size, unit := p.getHumanSize(p.Current)
+			totalSize, totalUnit := p.getHumanSize(p.Total)
+
+			// 打印进度条
+			fmt.Printf("\r%s [%-50s] %.1f%% (%.2f %s / %.2f %s)",
+				p.Desc,
+				strings.Repeat("=", int(percent/2))+">",
+				percent,
+				size, unit,
+				totalSize, totalUnit,
+			)
 			p.mu.Unlock()
-			break
 		}
-
-		// 计算百分比和单位
-		percent := float64(p.Current) / float64(p.Total) * 100
-		size, unit := p.getHumanSize(p.Current)
-		totalSize, totalUnit := p.getHumanSize(p.Total)
-
-		// 打印进度条
-		fmt.Printf("\r%s [%-50s] %.1f%% (%.2f %s / %.2f %s)",
-			p.Desc,
-			strings.Repeat("=", int(percent/2))+">",
-			percent,
-			size, unit,
-			totalSize, totalUnit,
-		)
-		p.mu.Unlock()
 	}
 }
 
-// Finish 完成进度条
+// Finish 完成进度条，可安全多次调用
 func (p *ProgressBar) Finish() {
+	p.doneOnce.Do(func() {
+		if p.done != nil {
+			close(p.done)
+		}
+	})
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.Total <= 0 {
+		return
+	}
 
 	// 获取当前大小（完成时 Current == Total）和单位（与 Total 单位一致）
 	currentSize, currentUnit := p.getHumanSize(p.Current)
 	totalSize, totalUnit := p.getHumanSize(p.Total)
 
-	// 格式化字符串：5个占位符对应5个参数
 	fmt.Printf("\r%s [%-50s] 100.0%% (%.2f %s / %.2f %s)\n",
-		p.Desc,                  // %s：描述文字（如 "上传中"）
-		strings.Repeat("=", 50), // %-50s：50个等号填满进度条
-		currentSize,             // %.2f：当前大小数值（完成时=总大小）
-		currentUnit,             // %s：当前单位（如 MiB/GiB）
-		totalSize,               // %.2f：总大小数值
-		totalUnit,               // %s：总单位（如 MiB/GiB）
+		p.Desc,
+		strings.Repeat("=", 50),
+		currentSize,
+		currentUnit,
+		totalSize,
+		totalUnit,
 	)
 }
 
@@ -418,39 +491,114 @@ func (p *ProgressBar) getHumanSize(bytes int64) (float64, string) {
 
 // ==================== 主函数 ====================
 
+const usageText = `🌊 FileFlow Bridge - 文件提供客户端
+
+用法:
+  fileflowprovider [flags] <桥接服务器URL> <文件路径>
+
+示例:
+  fileflowprovider http://localhost:8000 ./large_file.zip
+  fileflowprovider --hash --max-downloads=3 https://ffb.soocoo.xyz ./file.zip
+  FFB_API_KEY=xxx fileflowprovider --hash https://ffb.soocoo.xyz ./file.zip
+
+Flags:
+`
+
+// computeSHA256 流式计算文件 SHA256（小写十六进制）
+func computeSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 func main() {
-	if len(os.Args) < 3 {
-		fmt.Println("🌊 FileFlow Bridge - 文件提供客户端")
-		fmt.Println("=" + strings.Repeat("=", 49))
-		fmt.Println("用法: flow_provider <桥接服务器URL> <文件路径>")
-		fmt.Println("示例: flow_provider http://localhost:8000 ./large_file.zip")
+	var (
+		flagHash         = flag.Bool("hash", false, "上传前在本地计算 SHA256 并提交给桥用于校验")
+		flagSHA256       = flag.String("sha256", "", "直接指定文件的 SHA256（64 位十六进制），优先级高于 --hash")
+		flagMaxDownloads = flag.Int("max-downloads", 0, "允许的最大下载次数；当前 bridge 仅支持 0/1（>1 会被服务器拒绝）")
+		flagAPIKey       = flag.String("api-key", os.Getenv("FFB_API_KEY"), "可选：桥接服务器的 API Key（也可通过 FFB_API_KEY 环境变量设置）")
+		flagWaitTimeout  = flag.Duration("wait-timeout", 30*time.Minute, "上传完成后等待下载者完成的最长时间")
+		flagResumable    = flag.Bool("resumable", false, "启用断点续传：使用 chunked PUT 上传；支持中断后恢复，下载端原生支持 Range")
+		flagChunkSize    = flag.Int64("chunk-size", 0, "resumable 模式下的 chunk 大小（字节），0=用服务器默认（8MiB）")
+		flagUploadConc   = flag.Int("upload-conc", 4, "resumable 上传并发数")
+		flagMaxRetries   = flag.Int("retries", 5, "单个 chunk 失败后的重试次数")
+	)
+	flag.Usage = func() {
+		fmt.Fprint(os.Stderr, usageText)
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+
+	args := flag.Args()
+	if len(args) < 2 {
+		flag.Usage()
 		os.Exit(1)
 	}
+	bridgeURL := args[0]
+	filePath := args[1]
 
-	bridgeURL := os.Args[1]
-	filePath := os.Args[2]
-
-	// 检查文件是否存在
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		fmt.Println("❌ 错误: 文件", filePath, "不存在")
 		os.Exit(1)
 	}
 
 	provider := NewFlowProvider(bridgeURL)
+	provider.APIKey = strings.TrimSpace(*flagAPIKey)
+	if *flagMaxDownloads > 1 {
+		fmt.Println("⚠️ 注意: bridge 当前不支持 max_downloads > 1，会返回 501；建议改为 0/1")
+	}
+	if *flagMaxDownloads > 0 {
+		provider.MaxDownloads = *flagMaxDownloads
+	}
+	if *flagWaitTimeout > 0 {
+		provider.WaitTimeout = *flagWaitTimeout
+	}
+	provider.Resumable = *flagResumable
+	provider.ChunkSize = *flagChunkSize
+	provider.UploadConc = *flagUploadConc
+	provider.MaxRetries = *flagMaxRetries
 
-	// 执行注册和传输
-	var err error
+	// 解析 SHA256：优先用显式给的，再回退到本地计算
+	if v := strings.TrimSpace(*flagSHA256); v != "" {
+		provider.SHA256 = strings.ToLower(v)
+	} else if *flagHash {
+		fmt.Println("🔐 正在计算 SHA256...")
+		sum, err := computeSHA256(filePath)
+		if err != nil {
+			fmt.Println("❌ 计算 SHA256 失败:", err)
+			os.Exit(1)
+		}
+		provider.SHA256 = sum
+		fmt.Println("🔐 SHA256:", sum)
+	}
+
 	fmt.Println("📝 注册文件中...")
-	if _, err = provider.RegisterFile(filePath); err != nil {
+	if _, err := provider.RegisterFile(filePath); err != nil {
 		fmt.Println("❌ 注册失败:", err)
+		os.Exit(1)
 	}
 
-	fmt.Println("🔗 建立流连接...")
-	if err = provider.EstablishStreamConnection(); err != nil {
-		fmt.Println("❌ 传输失败:", err)
+	if provider.Resumable {
+		fmt.Println("📤 启动 resumable 上传...")
+		if err := provider.UploadChunked(); err != nil {
+			fmt.Println("❌ 上传失败:", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Println("🔗 建立流连接...")
+		if err := provider.EstablishStreamConnection(); err != nil {
+			fmt.Println("❌ 传输失败:", err)
+			os.Exit(1)
+		}
 	}
 
-	// 显示下载信息
 	fmt.Println("\n" + strings.Repeat("=", 60))
 	fmt.Println(provider.GenerateDownloadInfo())
 	fmt.Println(strings.Repeat("=", 60))

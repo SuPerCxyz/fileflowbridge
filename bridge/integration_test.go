@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
 
@@ -26,6 +25,7 @@ type IntegrationTestSuite struct {
 	bridgeURL   string
 	tempDir     string
 	testFiles   []string
+	testFilesMu sync.Mutex
 	cleanupOnce sync.Once
 }
 
@@ -48,20 +48,14 @@ func createIntegrationTestSuite(t *testing.T) *IntegrationTestSuite {
 		activeStreams:       make(map[string]interface{}),
 		downloadCompleted:   make(map[string]bool),
 		downloadCompletedAt: make(map[string]time.Time),
+		downloadDone:        make(map[string]chan struct{}),
 		serverStats: ServerStats{
 			StartTime: time.Now(),
 		},
 	}
 
-	// 创建HTTP路由器
-	router := mux.NewRouter()
-	router.HandleFunc("/register", ffb.handleFileRegistration).Methods("POST")
-	router.HandleFunc("/status/{auth_token}", ffb.handleStatusCheck).Methods("GET")
-	router.HandleFunc("/stats", ffb.handleServerStats).Methods("GET")
-	router.HandleFunc("/health", ffb.handleHealthCheck).Methods("GET")
-	router.HandleFunc("/download/{auth_token}", ffb.handleFileDownload).Methods("GET")
-	router.HandleFunc("/upload/{auth_token}", ffb.handleFileUpload).Methods("POST")
-	router.HandleFunc("/ws/{auth_token}", ffb.handleWebSocketConnection).Methods("GET")
+	// 创建HTTP路由器（直接复用生产路由）
+	router := ffb.buildRouter()
 
 	// 创建测试服务器
 	server := httptest.NewServer(router)
@@ -96,7 +90,9 @@ func (suite *IntegrationTestSuite) createTestFile(name string, content string) s
 	if err != nil {
 		panic(fmt.Sprintf("创建测试文件失败: %v", err))
 	}
+	suite.testFilesMu.Lock()
 	suite.testFiles = append(suite.testFiles, filePath)
+	suite.testFilesMu.Unlock()
 	return filePath
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/mux"
+	"github.com/go-chi/chi/v5"
 )
 
 // 创建测试用的FileFlowBridge实例
@@ -26,6 +27,7 @@ func createTestBridge() *FileFlowBridge {
 		activeStreams:       make(map[string]interface{}),
 		downloadCompleted:   make(map[string]bool),
 		downloadCompletedAt: make(map[string]time.Time),
+		downloadDone:        make(map[string]chan struct{}),
 	}
 }
 
@@ -94,7 +96,10 @@ func TestStatusCheck(t *testing.T) {
 	// 创建状态查询请求
 	req := httptest.NewRequest("GET", "/status/"+testToken, nil)
 	req.RemoteAddr = "127.0.0.1:12345"
-	req = mux.SetURLVars(req, map[string]string{"auth_token": testToken})
+	// 通过 chi RouteContext 注入路径参数
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("auth_token", testToken)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 
 	// 调用处理器

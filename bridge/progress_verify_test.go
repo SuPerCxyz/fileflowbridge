@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
 
@@ -22,11 +21,7 @@ import (
 // 4. 最终 progress 收敛到 file.Size
 func TestUploadProgressMatchesActualDownload(t *testing.T) {
 	ffb := NewFileFlowBridge(0, 0, 100*1024*1024*1024, 16)
-	router := mux.NewRouter()
-	router.HandleFunc("/register", ffb.handleFileRegistration).Methods("POST")
-	router.HandleFunc("/ws/{auth_token}", ffb.handleWebSocketConnection).Methods("GET")
-	router.HandleFunc("/download/{auth_token}", ffb.handleFileDownload)
-	router.HandleFunc("/download/{auth_token}/{filename}", ffb.handleFileDownloadWithName)
+	router := ffb.buildRouter()
 
 	srv := httptest.NewServer(router)
 	defer srv.Close()
