@@ -81,3 +81,25 @@ func (ffb *FileFlowBridge) handleHealthCheck(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
+
+// handleClientConfig GET /config
+//
+// 返回前端需要知道的服务端开关，主要给浏览器上传页用：
+//   - requires_api_key：服务端是否启用 --api-key（前端需要提示用户输入）
+//   - max_file_size：注册的字节上限
+//   - max_parallel_uploads：服务端并发上限，前端可据此提示用户
+//
+// 不返回任何敏感字段；本接口本身**不需要鉴权**，因为它就是用来告诉客户端
+// "你是否需要鉴权"的元接口。
+func (ffb *FileFlowBridge) handleClientConfig(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]any{
+		"requires_api_key":     ffb.APIKey != "",
+		"max_file_size":        ffb.MaxFileSize,
+		"max_parallel_uploads": ffb.MaxParallelUploads,
+		"resumable_supported":  true,
+		"revoke_supported":     true,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(resp)
+}

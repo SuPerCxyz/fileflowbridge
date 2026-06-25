@@ -87,6 +87,7 @@ func (ffb *FileFlowBridge) buildRouter() http.Handler {
 	router.Get("/stats", ffb.handleServerStats)
 	router.Get("/health", ffb.handleHealthCheck)
 	router.Get("/metrics", ffb.handleMetrics)
+	router.Get("/config", ffb.handleClientConfig)
 
 	// 静态文件：仅在 ./static 目录存在时启用
 	staticDir := "./static"
