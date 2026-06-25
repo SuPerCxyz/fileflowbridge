@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -41,9 +42,9 @@ func (ffb *FileFlowBridge) handleWebSocketConnection(w http.ResponseWriter, r *h
 		return
 	}
 	// 注意：WS 是长连接，释放放到 defer 末尾
-	slotReleased := false
+	slotReleased := atomic.Bool{}
 	defer func() {
-		if !slotReleased {
+		if slotReleased.CompareAndSwap(false, true) {
 			ffb.releaseUploadSlot()
 		}
 	}()
@@ -163,8 +164,7 @@ func (ffb *FileFlowBridge) handleWebSocketConnection(w http.ResponseWriter, r *h
 		defer conn.Close()
 		// WS 退出时归还信号量
 		defer func() {
-			if !slotReleased {
-				slotReleased = true
+			if slotReleased.CompareAndSwap(false, true) {
 				ffb.releaseUploadSlot()
 			}
 		}()

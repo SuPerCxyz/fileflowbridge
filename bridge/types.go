@@ -44,20 +44,108 @@ type FileMetadata struct {
 	// === v3 新增：断点续传 (resumable) ===
 	//
 	// Resumable=true 时启用 chunked 上传：
-	//   - 注册时 bridge 创建 TempPath 临时文件 + ReceivedChunks 位图
+	//   - 注册时 bridge 创建 TempPath 临时文件 + chunk 位集
 	//   - provider 通过 PUT /upload/{token}/chunk?index=N 上传单个块
 	//   - GET /upload/{token}/status 查询已收块（用于客户端续传）
 	//   - 全部块到齐后文件标记为 ready，下载端 GET /download 可用 Range 支持
 	// Resumable=false（默认）保留 v1/v2 的零落盘行为。
-	Resumable      bool       `json:"resumable,omitempty"`
-	ChunkSize      int64      `json:"chunk_size,omitempty"`
-	TotalChunks    int        `json:"total_chunks,omitempty"`
-	TempPath       string     `json:"-"` // 临时文件路径，不外暴露
-	ReceivedChunks []bool     `json:"-"` // chunk 接收位图，按 index 索引
-	ReceivedBytes  int64      `json:"received_bytes,omitempty"`
-	UploadReady    bool       `json:"upload_ready,omitempty"` // 所有 chunk 到齐
-	UploadReadyAt  time.Time  `json:"upload_ready_at,omitempty"`
-	chunkMu        sync.Mutex // 保护 ReceivedChunks / ReceivedBytes / UploadReady
+	Resumable     bool      `json:"resumable,omitempty"`
+	ChunkSize     int64     `json:"chunk_size,omitempty"`
+	TotalChunks   int       `json:"total_chunks,omitempty"`
+	TempPath      string    `json:"-"` // 临时文件路径，不外暴露
+	ReceivedBytes int64     `json:"received_bytes,omitempty"`
+	UploadReadyAt time.Time `json:"upload_ready_at,omitempty"`
+
+	// receivedChunks 用位集存储已收 chunk index：第 i 位为 1 表示 index=i 已收。
+	// 相比 []bool 内存降为 1/8（4 KiB chunk × 100 GiB 文件 ≈ 3.2 MB vs 26 MB）。
+	// 受 chunkMu 保护。
+	receivedChunks []uint64
+
+	// missingCount 当前缺失的 chunk 数，便于 O(1) 判断 upload 是否完成、
+	// 避免 status 端点每次 O(N) 全扫位图。受 chunkMu 保护。
+	missingCount int
+
+	// uploadReady 所有 chunk 到齐后置 true。原子读写以允许锁外快速预检。
+	uploadReady atomic.Bool
+
+	chunkMu sync.Mutex // 保护 receivedChunks / ReceivedBytes / missingCount
+}
+
+// MarkChunkReceived 在 chunkMu 内幂等标记 chunk index 已收。
+// 返回 (新收, 全部收齐)。新收=true 表示首次记录此 index。
+func (m *FileMetadata) MarkChunkReceived(index int, n int64) (newlyReceived, allDone bool) {
+	m.chunkMu.Lock()
+	defer m.chunkMu.Unlock()
+
+	word := index / 64
+	bit := uint64(1) << uint(index%64)
+	if word < 0 || word >= len(m.receivedChunks) {
+		return false, m.missingCount == 0
+	}
+	if m.receivedChunks[word]&bit != 0 {
+		// 已收过，幂等返回
+		return false, m.missingCount == 0
+	}
+	m.receivedChunks[word] |= bit
+	m.ReceivedBytes += n
+	if m.missingCount > 0 {
+		m.missingCount--
+	}
+	allDone = m.missingCount == 0
+	return true, allDone
+}
+
+// HasChunk 在锁内查询某 index 是否已收。
+func (m *FileMetadata) HasChunk(index int) bool {
+	m.chunkMu.Lock()
+	defer m.chunkMu.Unlock()
+	word := index / 64
+	bit := uint64(1) << uint(index%64)
+	if word < 0 || word >= len(m.receivedChunks) {
+		return false
+	}
+	return m.receivedChunks[word]&bit != 0
+}
+
+// SnapshotChunkStatus 返回上传状态快照供 /status 接口使用。
+// missingLimit > 0 时 missing 列表最多返回这么多项（截断防 DoS）；0 表示不限。
+func (m *FileMetadata) SnapshotChunkStatus(missingLimit int) (missing []int, missingCount int, receivedBytes int64) {
+	m.chunkMu.Lock()
+	defer m.chunkMu.Unlock()
+
+	missingCount = m.missingCount
+	receivedBytes = m.ReceivedBytes
+
+	if missingCount == 0 {
+		return nil, 0, receivedBytes
+	}
+
+	cap := missingCount
+	if missingLimit > 0 && missingLimit < cap {
+		cap = missingLimit
+	}
+	missing = make([]int, 0, cap)
+	for i := 0; i < m.TotalChunks; i++ {
+		word := i / 64
+		bit := uint64(1) << uint(i%64)
+		if m.receivedChunks[word]&bit == 0 {
+			missing = append(missing, i)
+			if missingLimit > 0 && len(missing) >= missingLimit {
+				break
+			}
+		}
+	}
+	return missing, missingCount, receivedBytes
+}
+
+// InitChunkBitmap 初始化位图与 missingCount，应在注册时调用。
+func (m *FileMetadata) InitChunkBitmap(totalChunks int) {
+	m.chunkMu.Lock()
+	defer m.chunkMu.Unlock()
+	m.TotalChunks = totalChunks
+	words := (totalChunks + 63) / 64
+	m.receivedChunks = make([]uint64, words)
+	m.missingCount = totalChunks
 }
 
 // ServerStats 服务器统计信息

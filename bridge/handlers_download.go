@@ -35,7 +35,10 @@ func (ffb *FileFlowBridge) handleFileDownloadWithName(w http.ResponseWriter, r *
 // 当前实现仅支持 single-shot 下载（max_downloads <= 1）。
 // 多接收端被 /register 直接拒绝；这里不再处理 N > 1 的分支。
 func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.Request, authToken string) {
-	ffb.metrics.incDownload()
+	// HEAD 仅用于探测元数据，不计入 download 指标（避免偏差）。
+	if r.Method != http.MethodHead {
+		ffb.metrics.incDownload()
+	}
 
 	ffb.mu.RLock()
 	metadata, exists := ffb.fileRegistry[authToken]

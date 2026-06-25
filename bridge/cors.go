@@ -115,8 +115,8 @@ func (ffb *FileFlowBridge) corsMiddleware(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
 			}
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, X-Metrics-Key, Range")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, X-API-Key, X-Metrics-Key, Range, If-Range, If-Modified-Since")
 			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, X-FileFlow-FileID, X-FileFlow-Original-Filename, X-FileFlow-SHA256")
 		}
 		if r.Method == http.MethodOptions {

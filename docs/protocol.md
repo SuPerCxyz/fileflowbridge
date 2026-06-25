@@ -102,6 +102,11 @@ resumable 模式（注册时 `resumable=true`）只能使用第 4 条 chunk 通�
 > **并发上限**：所有上传通道共享一个进程级信号量，容量由 `--max-parallel-uploads`
 > （默认 10）控制。槽位耗尽时新上传在 2 秒内未拿到槽返回 `429 Too Many Requests`。
 > `0` 或负数表示不限。
+>
+> **公平性提示**：resumable 模式下单个 chunk PUT 在上传完成前持有槽位，
+> chunk 越大持有时间越长。`chunk_size` 上限为 1 GiB，因此单个 chunk 上传理论上
+> 可独占一个槽位数十秒到数分钟。若部署在公共环境，建议保持默认 8 MiB 左右的
+> chunk size，并适当上调 `--max-parallel-uploads`。
 
 ### 4.1 TCP 通道（推荐 CLI provider）
 
@@ -165,10 +170,12 @@ Content-Length: <expected_chunk_bytes>
 
 - `index` 取值范围 `0..total_chunks-1`，越界返回 `400`。
 - 非末块的字节数必须等于 `chunk_size`；末块字节数等于 `size - (total_chunks-1)*chunk_size`。
-- `Content-Length` 若存在则必须等于期望长度，否则返回 `400`。
-- 重复上传同一 `index` 是**幂等**的（覆盖位图位与同段字节）。
+- 必须显式声明 `Content-Length` 且等于期望长度；缺失返回 `411 Length Required`，
+  不匹配返回 `400`（不支持 chunked transfer encoding）。
+- 重复上传同一 `index` 是**幂等**的（覆盖位图位与同段字节，但 `received_bytes` 不重复计入）。
 - 已 `upload_ready` 后再次提交立即返回 `200` 并附最新状态。
 - 上传槽位被全局信号量约束，槽满返回 `429 Too Many Requests`。
+- token 已被清理（过期 / 下载完成）时返回 `410 Gone`。
 
 成功响应（`200`）始终是 §4.4.3 描述的状态 JSON。
 
@@ -191,18 +198,23 @@ Provider 也可以直接选择重发任意 chunk，bridge 幂等处理。
   "size": 104857600,
   "received_bytes": 33554432,
   "missing_chunks": [4, 5, 6, 7, 8, 9, 10, 11, 12],
+  "missing_count": 9,
   "upload_ready": false
 }
 ```
 
-| 字段           | 含义 |
-| -------------- | ---- |
-| received_bytes | 已被 bridge 写入临时文件、且首次计入的字节数（不重复计入幂等重传） |
-| missing_chunks | 仍未收到的 chunk index 列表 |
-| upload_ready   | 所有 chunk 到齐后置 `true`；此后下载端访问 `/download/{token}` 直接由临时文件服务（支持 `Range`） |
+| 字段              | 含义 |
+| ----------------- | ---- |
+| received_bytes    | 已被 bridge 写入临时文件、且首次计入的字节数（不重复计入幂等重传） |
+| missing_chunks    | 仍未收到的 chunk index 列表；为防 DoS 单次响应最多返回前 10000 项 |
+| missing_count     | 实际剩余的 chunk 数（即使 `missing_chunks` 被截断，本字段仍为真实值） |
+| missing_truncated | 仅当 `missing_chunks` 被截断时出现并为 `true`；客户端应先补这一批前缀再次查询 |
+| upload_ready      | 所有 chunk 到齐后置 `true`；此后下载端访问 `/download/{token}` 直接由临时文件服务（支持 `Range`） |
 
-> 注：resumable 续传的语义是「同一 token 内的 chunk 续传」。注册时 bridge 即根据 `size`
-> 在 `--temp-dir` 预留 `.part` 文件，TTL 内随时可以续传。Token 过期或注册被清理后必须重新 `/register`。
+> 注：`chunk_size` 范围被夹到 `[64 KiB, 1 GiB]`；过小或过大会被服务端调整后返回真实值。
+> resumable 续传的语义是「同一 token 内的 chunk 续传」。注册时 bridge 即根据 `size`
+> 在 `--temp-dir` 预留 `.part` 文件（权限 `0o600`，目录 `0o700`），TTL 内随时可以续传。
+> Token 过期或注册被清理后必须重新 `/register`。
 
 ---
 

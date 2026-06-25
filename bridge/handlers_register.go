@@ -123,9 +123,8 @@ func (ffb *FileFlowBridge) handleFileRegistration(w http.ResponseWriter, r *http
 			return
 		}
 		metadata.ChunkSize = chunkSize
-		metadata.TotalChunks = totalChunks
 		metadata.TempPath = path
-		metadata.ReceivedChunks = make([]bool, totalChunks)
+		metadata.InitChunkBitmap(totalChunks)
 	}
 
 	ffb.mu.Lock()

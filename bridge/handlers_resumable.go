@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -16,26 +15,23 @@ import (
 // 与 stream 模式不同，resumable 模式的文件实际落盘在 metadata.TempPath。
 // 全部 chunk 到齐后，下载端访问 /download 会用 http.ServeContent 服务该文件，
 // 因此原生支持 Range / If-Range / HEAD / If-Modified-Since 等。
+//
+// 状态机说明：状态转换由外层 handleDownloadRequest 统一负责，本函数仅做：
+//   1) 上传完成性校验
+//   2) 文件 IO + ServeContent
+//   3) 完成时校验 SHA256 + 更新统计
+// 不再独立设置 Status，避免与未来多下载端语义冲突。
 
 func (ffb *FileFlowBridge) serveResumableDownload(
 	w http.ResponseWriter, r *http.Request, authToken string, metadata *FileMetadata,
 ) {
-	if !metadata.UploadReady {
+	if !metadata.uploadReady.Load() {
 		// 425 Too Early：客户端可以稍后重试
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "上传尚未完成，请稍后再试", http.StatusTooEarly)
 		ffb.metrics.incDownloadError()
 		return
 	}
-
-	// 状态机：streaming/ready/downloading → downloading
-	ffb.mu.Lock()
-	if metadata.Status == "registered" {
-		metadata.Status = "streaming"
-	}
-	previousStatus := metadata.Status
-	metadata.Status = "downloading"
-	ffb.mu.Unlock()
 
 	defer func() {
 		// resumable 模式同样是 single-shot：下载完成（或失败）后清理
@@ -45,11 +41,6 @@ func (ffb *FileFlowBridge) serveResumableDownload(
 	// 打开临时文件
 	f, err := os.Open(metadata.TempPath)
 	if err != nil {
-		ffb.mu.Lock()
-		if meta, ok := ffb.fileRegistry[authToken]; ok && !ffb.downloadCompleted[authToken] {
-			meta.Status = previousStatus
-		}
-		ffb.mu.Unlock()
 		logError("打开 resumable 临时文件失败: %v", err)
 		http.Error(w, "服务器内部错误", http.StatusInternalServerError)
 		ffb.metrics.incDownloadError()
@@ -74,9 +65,12 @@ func (ffb *FileFlowBridge) serveResumableDownload(
 	rw := newCountingResponseWriter(w, ffb.DownloadBytesPerSec, ffb.metrics.addDownloadBytes)
 	http.ServeContent(rw, r, metadata.OriginalFilename, metadata.UploadReadyAt, f)
 
-	// 仅在完整发完整文件大小时才做 SHA256 校验（Range 请求不校验）
+	// 仅在完整发完整文件大小时才做 SHA256 校验：
+	// - Range 请求只发了部分文件
+	// - HEAD 请求不传输 body
 	rangeReq := r.Header.Get("Range") != ""
-	transferCompleted := !rangeReq && rw.written >= metadata.Size
+	isHead := r.Method == http.MethodHead
+	transferCompleted := !rangeReq && !isHead && rw.written >= metadata.Size
 
 	if transferCompleted && metadata.ExpectedSHA256 != "" {
 		// 重新读临时文件做 hash；resumable 落盘比 stream 模式宽裕，可以离线校验
@@ -173,8 +167,57 @@ func (cw *countingResponseWriter) Flush() {
 	}
 }
 
-// 显式提供 Header / WriteHeader 是为了让外部能拿到内层 ResponseWriter 的能力
-var _ http.ResponseWriter = (*countingResponseWriter)(nil)
+// ReadFrom 实现 io.ReaderFrom，让 http.ServeContent 内部的 io.Copy
+// 可以走 sendfile(2) 零拷贝路径（无限速时直接委托底层 ResponseWriter）。
+// 有限速时回落到带令牌桶的分段拷贝。
+func (cw *countingResponseWriter) ReadFrom(src io.Reader) (int64, error) {
+	if cw.bucket != nil {
+		// 限速路径：分段读 + 令牌桶等待，无法走 sendfile
+		const chunk = 64 * 1024
+		buf := make([]byte, chunk)
+		var total int64
+		for {
+			nr, er := src.Read(buf)
+			if nr > 0 {
+				cw.bucket.wait(int64(nr))
+				nw, ew := cw.ResponseWriter.Write(buf[:nr])
+				total += int64(nw)
+				cw.written += int64(nw)
+				if cw.addBytes != nil {
+					cw.addBytes(int64(nw))
+				}
+				if ew != nil {
+					return total, ew
+				}
+				if nr != nw {
+					return total, io.ErrShortWrite
+				}
+			}
+			if er == io.EOF {
+				return total, nil
+			}
+			if er != nil {
+				return total, er
+			}
+		}
+	}
 
-// 防止编译器报 strconv 未使用（HEAD 路径中可能用到）
-var _ = strconv.Itoa
+	// 无限速：委托底层 ResponseWriter 的 ReadFrom（标准 http 响应支持 sendfile(2)）。
+	if rf, ok := cw.ResponseWriter.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(src)
+		cw.written += n
+		if cw.addBytes != nil {
+			cw.addBytes(n)
+		}
+		return n, err
+	}
+
+	// 兜底：底层不支持 ReaderFrom 时用 io.Copy（仍走 cw.Write，统计正确）。
+	return io.Copy(struct{ io.Writer }{cw}, src)
+}
+
+// 编译期保证接口
+var (
+	_ http.ResponseWriter = (*countingResponseWriter)(nil)
+	_ io.ReaderFrom       = (*countingResponseWriter)(nil)
+)

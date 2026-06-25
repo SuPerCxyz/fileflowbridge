@@ -57,6 +57,7 @@ func (ffb *FileFlowBridge) acquireUploadSlotBlocking(timeout time.Duration) bool
 }
 
 // releaseUploadSlot 释放一个上传槽。调用方应确保仅在 acquire 成功时调用。
+// 若 release 多于 acquire，会输出 WARN 日志而非静默吞掉，便于发现调用方 bug。
 func (ffb *FileFlowBridge) releaseUploadSlot() {
 	if ffb.uploadSem == nil {
 		return
@@ -64,6 +65,7 @@ func (ffb *FileFlowBridge) releaseUploadSlot() {
 	select {
 	case <-ffb.uploadSem:
 	default:
-		// 不应发生；如果 release 多于 acquire 就静默吞掉
+		// release 多于 acquire：通常意味着调用方 release 逻辑写错了
+		logWarn("⚠️ releaseUploadSlot 被调用但信号量为空，可能存在重复释放")
 	}
 }

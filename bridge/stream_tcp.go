@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,9 +46,9 @@ func (ffb *FileFlowBridge) handleStreamConnection(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	slotReleased := false
+	slotReleased := atomic.Bool{}
 	defer func() {
-		if !slotReleased {
+		if slotReleased.CompareAndSwap(false, true) {
 			ffb.releaseUploadSlot()
 		}
 	}()
@@ -166,9 +167,10 @@ func (ffb *FileFlowBridge) handleStreamConnection(conn net.Conn) {
 	// 握手完成，监控协程接管；槽在该协程退出时释放
 	go func() {
 		ffb.monitorConnectionHealth(streamConn, authToken)
-		ffb.releaseUploadSlot()
+		if slotReleased.CompareAndSwap(false, true) {
+			ffb.releaseUploadSlot()
+		}
 	}()
-	slotReleased = true
 }
 
 // validateStreamConnection 校验 TCP 握手时携带的 token

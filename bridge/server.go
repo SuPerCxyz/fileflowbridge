@@ -52,13 +52,19 @@ func (ffb *FileFlowBridge) initUploadSem() {
 }
 
 // ensureTempDir 返回 resumable 临时文件根目录；首次调用时创建。
+// 权限 0o700：仅 bridge 进程 owner 可访问，防止多用户机器上其他用户读取 .part。
 func (ffb *FileFlowBridge) ensureTempDir() (string, error) {
 	dir := ffb.TempDir
 	if dir == "" {
 		dir = filepath.Join(os.TempDir(), "fileflow-bridge")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
+	}
+	// MkdirAll 在目录已存在时不会调整权限，显式 Chmod 一次。
+	// 失败仅记 WARN：可能是非 owner 持有该目录或不支持 Unix 权限位的 FS。
+	if err := os.Chmod(dir, 0o700); err != nil {
+		logWarn("temp-dir Chmod 0o700 失败: %s: %v", dir, err)
 	}
 	return dir, nil
 }

@@ -21,7 +21,7 @@ func main() {
 	defaultHTTPPort := getEnvInt("FFB_HTTP_PORT", 8000)
 	defaultTCPPort := getEnvInt("FFB_TCP_PORT", 8888)
 	defaultMaxFileSize := getEnvInt64("FFB_MAX_FILE_SIZE", 100)
-	defaultTokenLength := getEnvInt("FFB_TOKEN_LEN", 8)
+	defaultTokenLength := getEnvInt("FFB_TOKEN_LEN", 16)
 	defaultAllowedOrigins := os.Getenv("FFB_ALLOWED_ORIGINS")
 	defaultAPIKey := os.Getenv("FFB_API_KEY")
 	defaultMetricsKey := os.Getenv("FFB_METRICS_KEY")
@@ -35,7 +35,7 @@ func main() {
 	httpPort := flag.Int("http-port", defaultHTTPPort, "HTTP 服务器端口")
 	tcpPort := flag.Int("tcp-port", defaultTCPPort, "TCP 流服务器端口")
 	maxFileSize := flag.Int64("max-file-size", defaultMaxFileSize, "最大允许文件大小 (GiB)")
-	tokenLength := flag.Int("token-len", defaultTokenLength, "随机 token 长度 (6-32)")
+	tokenLength := flag.Int("token-len", defaultTokenLength, "随机 token 长度 (6-32)；默认 16，建议 ≥ 12")
 	allowedOrigins := flag.String("allowed-origins", defaultAllowedOrigins, "CORS 允许的 origin 列表，逗号分隔；空或 * 表示放行全部")
 	apiKey := flag.String("api-key", defaultAPIKey, "可选：要求 /register 携带 X-API-Key 头")
 	metricsKey := flag.String("metrics-key", defaultMetricsKey, "可选：要求 /metrics 携带 X-Metrics-Key 头（独立于 API Key）")
@@ -55,8 +55,8 @@ func main() {
 	maxFileSizeBytes := (*maxFileSize) * 1024 * 1024 * 1024
 
 	if *tokenLength < 6 || *tokenLength > 32 {
-		log.Printf("⚠️ 警告: ID 长度 %d 不在有效范围 (6-32)，回落 8", *tokenLength)
-		*tokenLength = 8
+		log.Printf("⚠️ 警告: ID 长度 %d 不在有效范围 (6-32)，回落 16", *tokenLength)
+		*tokenLength = 16
 	}
 
 	server := NewFileFlowBridge(*httpPort, *tcpPort, maxFileSizeBytes, *tokenLength)
