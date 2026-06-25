@@ -93,6 +93,40 @@
 
 ---
 
+## 3.1 撤销 `DELETE /register/{auth_token}`
+
+主动撤销已注册的 token，让链接立即失效并释放所有相关资源：
+
+- 删除 `fileRegistry[token]`
+- 关闭已建立的 TCP / WS / multipart stream（正在进行的下载会被截断）
+- 删除 resumable 模式下的 `.part` 临时文件
+- `metrics` 中 `ffb_revoked_total` +1
+
+### 鉴权
+
+与 `/register` 相同。启用 `--api-key` 时必须携带 `X-API-Key` 头。
+
+### 状态码
+
+| 状态 | 含义 |
+| ---- | ---- |
+| 200  | 撤销成功，body 为 `{"revoked":true,"auth_token":"..."}` |
+| 204  | token 已经下载完成或已被 cleanup（幂等放行） |
+| 401  | API Key 缺失或错误 |
+| 404  | token 从未注册过 |
+
+### 典型场景
+
+- **发错链接**：复制错文件、群里发错人 → `DELETE` 立即失效
+- **上传错文件**：注册后才发现选错；及时撤销避免下载者下到错版本
+- **Provider 取消**：CLI 收到 `SIGINT/SIGTERM/SIGHUP` 时自动发 `DELETE`，无需等 TTL
+- **批量清理**：脚本失败后可主动回收 token
+
+`fileflowprovider` 已经内置 Ctrl+C 自动撤销逻辑；自实现的 provider 也建议在
+退出路径上调用一次 `DELETE`。
+
+---
+
 ## 4. 推送数据（Provider → Bridge）
 
 注册成功后，provider 必须通过下面四条通道之一推送字节流。前三条 stream 通道在协议上互斥；
@@ -121,6 +155,11 @@ resumable 模式（注册时 `resumable=true`）只能使用第 4 条 chunk 通�
 4. provider 直接将文件字节流写入连接；EOF 表示发送结束。
 5. bridge 会保持连接直到下载完成 / 客户端断开 / 超时；provider 可以读到一个 EOF 作为完成信号。
 6. resumable token 走 TCP 会被立即拒绝，必须改用 §4.4。
+
+> **取消语义**：握手成功后、下载端到来之前，bridge 会以 2s 间隔 `Peek(1)` 探测 TCP
+> 连接是否存活。provider 主动 `close()`（例如 Ctrl+C 退出）会被探测到，bridge 立即
+> 触发 `removeFileResources`：注册表项 / .part / done channel 全部清掉，等价于
+> provider 主动调用了 `DELETE /register/{token}`。
 
 ### 4.2 HTTP multipart 通道
 

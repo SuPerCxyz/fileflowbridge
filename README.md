@@ -17,6 +17,7 @@
 * **全局限速**：上下行各自的令牌桶，按需限速。
 * **并行上传上限**：所有上传通道共享的进程级信号量，默认 10，可通过 `--max-parallel-uploads` / `FFB_MAX_PARALLEL_UPLOADS` 调整。
 * **断点续传 (resumable)**：可选 chunked 上传模式，provider 中断后可从已收到的 chunk 续传；下载端原生支持 HTTP `Range`。
+* **主动撤销**：`DELETE /register/{token}` 让链接立即失效并清理 `.part`；provider CLI 收到 Ctrl+C / SIGTERM 时自动调用，避免错链接久留。
 * **优雅关闭**：SIGINT/SIGTERM 安全收尾，并按 TTL 清理过期资源。
 
 ---
@@ -180,6 +181,7 @@ FFB_API_KEY=secret ./fileflowprovider --hash https://ffb.soocoo.xyz ./file.zip
 FileFlow Bridge 提供以下 REST API 接口：
 
 * `/register` - 注册新文件
+* `DELETE /register/{auth_token}` - 主动撤销注册并清理资源
 * `/upload/{auth_token}` - 上传文件（支持multipart表单）
 * `/download/{auth_token}` - 下载文件
 * `/download/{auth_token}/{filename}` - 按文件名下载

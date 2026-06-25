@@ -197,7 +197,17 @@ func (ffb *FileFlowBridge) validateStreamConnection(authToken string) bool {
 	return true
 }
 
-// monitorConnectionHealth 仅用作 housekeeping，不再做底层 TCP_INFO 探测
+// monitorConnectionHealth 既做 housekeeping，也通过 bufio.Reader.Peek 探测
+// provider 是否在下载端到来前主动断开。
+//
+// 探测语义：
+//   - 设置短读超时，调用 reader.Peek(1)
+//   - timeout → 正常活着，继续等
+//   - EOF / RST / 其他错误 → provider 已断开，立即 removeFileResources
+//
+// 关键：Peek 不消费字节；下载端到达后 pumpDownload 仍能从同一 reader 读到首字节。
+// 一旦下载端进入 pumpDownload，metadata.Status 变成 "downloading"，
+// 本协程检测到后退出探测分支，避免与下载读循环竞争 ReadDeadline。
 func (ffb *FileFlowBridge) monitorConnectionHealth(conn *StreamConnection, authToken string) {
 	ticker := time.NewTicker(connectionHealthInterval)
 	defer ticker.Stop()
@@ -209,17 +219,45 @@ func (ffb *FileFlowBridge) monitorConnectionHealth(conn *StreamConnection, authT
 	}
 	ffb.mu.RUnlock()
 
+	// 仅 TCP 路径有 Conn；multipart / WS 路径走各自的清理。
+	bufReader, _ := conn.Reader.(*bufio.Reader)
+
 	for {
 		select {
 		case <-ticker.C:
 			ffb.mu.RLock()
 			isCompleted := ffb.downloadCompleted[authToken]
 			_, isActive := ffb.activeStreams[authToken]
+			meta := ffb.fileRegistry[authToken]
 			ffb.mu.RUnlock()
 
 			if isCompleted || !isActive {
 				logInfo("📭 文件 %s (token_id: %s) 传输结束或资源已释放，停止监控", filename, authToken)
 				return
+			}
+
+			// 已经进入下载阶段，pumpDownload 会自己管理 ReadDeadline / 读循环，
+			// 不要再去并发 Peek 同一个 reader，避免抢字节 + 抢超时。
+			if meta != nil && meta.Status == "downloading" {
+				continue
+			}
+
+			// 还没下载端连进来。轻量 peek 一字节探测 provider 是否已断开。
+			if conn.Conn != nil && bufReader != nil {
+				_ = conn.Conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+				_, err := bufReader.Peek(1)
+				_ = conn.Conn.SetReadDeadline(time.Time{})
+				if err != nil {
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						// 正常：provider 在等下载端，没数据可读
+						continue
+					}
+					// EOF / RST / 其他 IO 错误 → provider 已断开
+					logWarn("📭 TCP provider 在下载端到来前断开: %s (token_id: %s): %v",
+						filename, authToken, err)
+					ffb.removeFileResources(authToken)
+					return
+				}
 			}
 		case <-ffb.ShutdownEvent:
 			logInfo("🛑 服务器关闭，停止监控: %s (token_id: %s)", filename, authToken)

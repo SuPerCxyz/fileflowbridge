@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,9 +14,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -76,6 +79,41 @@ type FlowProvider struct {
 }
 
 // ==================== 核心功能实现 ====================
+
+// RevokeFile 主动撤销已注册的 token（DELETE /register/{token}）。
+// 用于 Ctrl+C / Ctrl+\ 等场景，让 bridge 立即清理 .part 文件、注册表项
+// 并截断正在进行的下载，避免错误内容继续分发。
+//
+// 多次调用是幂等的：bridge 返回 200 / 204 都视为成功。
+func (f *FlowProvider) RevokeFile() error {
+	if f.AuthToken == "" {
+		return nil // 还没注册成功，没什么要撤销的
+	}
+	url := fmt.Sprintf("%s/register/%s", f.BridgeURL, f.AuthToken)
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return err
+	}
+	if f.APIKey != "" {
+		req.Header.Set("X-API-Key", f.APIKey)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusNoContent:
+		return nil
+	case http.StatusNotFound:
+		// 已被 cleanup 清掉，视作成功
+		return nil
+	default:
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("撤销失败: status=%d body=%s", resp.StatusCode, string(body))
+	}
+}
 
 // NewFlowProvider 创建新的FlowProvider实例
 func NewFlowProvider(bridgeURL string) *FlowProvider {
@@ -518,6 +556,20 @@ func computeSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// signalContext 返回一个会在 SIGINT/SIGTERM/SIGHUP 时取消的 Context。
+// 这是 provider 主动撤销的触发源——CLI 主流程在 ctx.Done() 时立即
+// 调用 RevokeFile()，让 bridge 立即释放资源而不是等到 TTL 过期。
+func signalContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		<-ch
+		cancel()
+	}()
+	return ctx, cancel
+}
+
 func main() {
 	var (
 		flagHash         = flag.Bool("hash", false, "上传前在本地计算 SHA256 并提交给桥用于校验")
@@ -585,15 +637,47 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 安装信号处理：注册成功后到上传结束之间，Ctrl+C / SIGTERM 必须
+	// 主动撤销 token 让 bridge 立即释放资源，而不是让对端等 TTL。
+	sigCtx, sigStop := signalContext()
+	defer sigStop()
+	var (
+		revoked   sync.Once
+		uploadErr error
+	)
+	revokeNow := func(reason string) {
+		revoked.Do(func() {
+			fmt.Fprintf(os.Stderr, "\n🛑 %s，撤销 token...\n", reason)
+			if err := provider.RevokeFile(); err != nil {
+				fmt.Fprintln(os.Stderr, "⚠️ 撤销失败:", err)
+			} else {
+				fmt.Fprintln(os.Stderr, "✅ 已撤销，bridge 资源已释放")
+			}
+		})
+	}
+	go func() {
+		<-sigCtx.Done()
+		revokeNow("收到中断信号")
+		os.Exit(130) // 标准 SIGINT 退出码
+	}()
+	// 上传过程中任何错误也一并撤销，避免半成品文件留在 bridge 端
+	defer func() {
+		if uploadErr != nil {
+			revokeNow("上传异常")
+		}
+	}()
+
 	if provider.Resumable {
 		fmt.Println("📤 启动 resumable 上传...")
 		if err := provider.UploadChunked(); err != nil {
+			uploadErr = err
 			fmt.Println("❌ 上传失败:", err)
 			os.Exit(1)
 		}
 	} else {
 		fmt.Println("🔗 建立流连接...")
 		if err := provider.EstablishStreamConnection(); err != nil {
+			uploadErr = err
 			fmt.Println("❌ 传输失败:", err)
 			os.Exit(1)
 		}

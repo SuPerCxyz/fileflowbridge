@@ -74,6 +74,7 @@ func (ffb *FileFlowBridge) buildRouter() http.Handler {
 	router := chi.NewRouter()
 
 	router.Post("/register", ffb.handleFileRegistration)
+	router.Delete("/register/{auth_token}", ffb.handleFileRevocation)
 	router.Post("/upload/{auth_token}", ffb.handleFileUpload)
 	router.Put("/upload/{auth_token}/chunk", ffb.handleFileUploadChunk)
 	router.Get("/upload/{auth_token}/status", ffb.handleUploadStatus)

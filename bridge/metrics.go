@@ -23,6 +23,7 @@ type serverMetrics struct {
 	downloadErrors    atomic.Int64
 	downloadsComplete atomic.Int64
 	hashMismatches    atomic.Int64
+	revokedTotal      atomic.Int64
 	bytesUploaded     atomic.Int64
 	bytesDownloaded   atomic.Int64
 }
@@ -35,6 +36,7 @@ func (m *serverMetrics) incDownload()         { m.downloadTotal.Add(1) }
 func (m *serverMetrics) incDownloadError()    { m.downloadErrors.Add(1) }
 func (m *serverMetrics) incDownloadComplete() { m.downloadsComplete.Add(1) }
 func (m *serverMetrics) incHashMismatch()     { m.hashMismatches.Add(1) }
+func (m *serverMetrics) incRevoked()          { m.revokedTotal.Add(1) }
 func (m *serverMetrics) addUploadBytes(n int64) {
 	if n > 0 {
 		m.bytesUploaded.Add(n)
@@ -82,6 +84,7 @@ func (ffb *FileFlowBridge) handleMetrics(w http.ResponseWriter, r *http.Request)
 	write("ffb_downloads_complete_total", "Total number of downloads that completed successfully.", "counter", ffb.metrics.downloadsComplete.Load())
 	write("ffb_downloads_errors_total", "Total number of downloads that ended in error.", "counter", ffb.metrics.downloadErrors.Load())
 	write("ffb_hash_mismatch_total", "Total number of SHA256 hash mismatches detected on completion.", "counter", ffb.metrics.hashMismatches.Load())
+	write("ffb_revoked_total", "Total number of tokens revoked via DELETE /register/{token}.", "counter", ffb.metrics.revokedTotal.Load())
 	write("ffb_bytes_uploaded_total", "Total bytes received from providers.", "counter", ffb.metrics.bytesUploaded.Load())
 	write("ffb_bytes_downloaded_total", "Total bytes sent to downloaders.", "counter", ffb.metrics.bytesDownloaded.Load())
 

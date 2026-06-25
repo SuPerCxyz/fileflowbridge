@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // ==================== 注册 ====================
@@ -173,4 +175,50 @@ func (ffb *FileFlowBridge) handleFileRegistration(w http.ResponseWriter, r *http
 	json.NewEncoder(w).Encode(responseData)
 
 	logInfo("📝 文件注册成功: %s (token_id: %s)", data.Filename, authToken)
+}
+
+// handleFileRevocation DELETE /register/{auth_token}
+//
+// 主动撤销：让链接立即失效并立即清理资源。
+// 适用场景：发错链接、上传错文件、provider 主动 Ctrl+C 取消。
+//
+// 鉴权：与 /register 一致。如果服务端配置了 API Key，必须携带 X-API-Key。
+//
+// 行为：
+//   - 200：成功；正在进行的下载会被截断（连接关闭），上传 goroutine 退出
+//   - 204：已经下载完成或已被清理，幂等放行
+//   - 401：缺失/错误 API Key
+//   - 404：token 从未注册过
+func (ffb *FileFlowBridge) handleFileRevocation(w http.ResponseWriter, r *http.Request) {
+	if !ffb.requireAPIKey(w, r) {
+		return
+	}
+
+	authToken := chi.URLParam(r, "auth_token")
+
+	ffb.mu.RLock()
+	_, registered := ffb.fileRegistry[authToken]
+	completed := ffb.downloadCompleted[authToken]
+	ffb.mu.RUnlock()
+
+	if !registered && !completed {
+		http.Error(w, "token 不存在", http.StatusNotFound)
+		return
+	}
+	if !registered && completed {
+		// 已经下完，被 cleanup 抢先一步；幂等返回
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	ffb.removeFileResources(authToken)
+	ffb.metrics.incRevoked()
+	logInfo("🛑 主动撤销 token: %s (来自 %s)", authToken, r.RemoteAddr)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"revoked":    true,
+		"auth_token": authToken,
+	})
 }
