@@ -1,5 +1,6 @@
 *log
 node_modules/
+.claude/
 
 # 本地构建产物
 /fileflowbridge
