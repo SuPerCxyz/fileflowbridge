@@ -74,7 +74,7 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 	// HEAD：仅返回头
 	if r.Method == http.MethodHead {
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, metadata.OriginalFilename))
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeContentDispositionFilename(metadata.OriginalFilename)))
 		if metadata.Size > 0 {
 			w.Header().Set("Content-Length", strconv.FormatInt(metadata.Size, 10))
 		}
@@ -126,7 +126,7 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 	metadata.Status = "downloading"
 	ffb.mu.Unlock()
 
-	// 等待 provider 流上线（最多 ~6 秒）
+	// 等待 provider 流上线（最多 ~12 秒：前 6 次 100ms，之后 200ms）
 	var streamConn interface{}
 	var streamReady bool
 	waitDuration := 100 * time.Millisecond
@@ -146,7 +146,9 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 
 	if !streamReady {
 		ffb.mu.Lock()
-		if meta, ok := ffb.fileRegistry[authToken]; ok && !ffb.downloadCompleted[authToken] {
+		// 仅在状态仍是 "downloading"（我们设置的）时才回滚，
+		// 避免覆盖并发清理或上传端更新导致的其他状态。
+		if meta, ok := ffb.fileRegistry[authToken]; ok && !ffb.downloadCompleted[authToken] && meta.Status == "downloading" {
 			meta.Status = previousStatus
 		}
 		ffb.mu.Unlock()
@@ -160,9 +162,9 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 
 	// 响应头
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, metadata.OriginalFilename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeContentDispositionFilename(metadata.OriginalFilename)))
 	w.Header().Set("X-FileFlow-FileID", authToken)
-	w.Header().Set("X-FileFlow-Original-Filename", metadata.OriginalFilename)
+	w.Header().Set("X-FileFlow-Original-Filename", sanitizeContentDispositionFilename(metadata.OriginalFilename))
 	if metadata.ExpectedSHA256 != "" {
 		w.Header().Set("X-FileFlow-SHA256", metadata.ExpectedSHA256)
 	}
@@ -199,7 +201,7 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 			"size":    metadata.Size,
 		}); err != nil {
 			ffb.mu.Lock()
-			if meta, ok := ffb.fileRegistry[authToken]; ok && !ffb.downloadCompleted[authToken] {
+			if meta, ok := ffb.fileRegistry[authToken]; ok && !ffb.downloadCompleted[authToken] && meta.Status == "downloading" {
 				meta.Status = previousStatus
 			}
 			ffb.mu.Unlock()

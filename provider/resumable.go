@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,6 +52,9 @@ func (f *FlowProvider) UploadChunked() error {
 	fmt.Printf("🚀 开始上传 %d 个 chunk（并发 %d，重试 %d）\n",
 		len(missing), f.UploadConc, f.MaxRetries)
 
+	// 共享 HTTP client，复用 TCP 连接
+	uploadClient := &http.Client{Timeout: 5 * time.Minute}
+
 	jobs := make(chan int, len(missing))
 	for _, idx := range missing {
 		jobs <- idx
@@ -63,9 +65,22 @@ func (f *FlowProvider) UploadChunked() error {
 		wg        sync.WaitGroup
 		errOnce   sync.Once
 		firstErr  error
+		errMu     sync.Mutex // 保护 firstErr 的读取
 		uploaded  int64
 		uploadedM sync.Mutex
 	)
+
+	hasError := func() bool {
+		errMu.Lock()
+		b := firstErr != nil
+		errMu.Unlock()
+		return b
+	}
+	setError := func(err error) {
+		errMu.Lock()
+		firstErr = err
+		errMu.Unlock()
+	}
 
 	totalBytes := f.FileInfo.Size
 	startTime := time.Now()
@@ -75,12 +90,12 @@ func (f *FlowProvider) UploadChunked() error {
 		go func(workerID int) {
 			defer wg.Done()
 			for idx := range jobs {
-				if firstErr != nil {
+				if hasError() {
 					return
 				}
-				n, err := f.uploadOneChunk(idx)
+				n, err := f.uploadOneChunk(idx, uploadClient)
 				if err != nil {
-					errOnce.Do(func() { firstErr = err })
+					errOnce.Do(func() { setError(err) })
 					return
 				}
 				uploadedM.Lock()
@@ -151,7 +166,7 @@ func (f *FlowProvider) queryChunkStatusFull() (*chunkStatusResp, error) {
 }
 
 // uploadOneChunk 上传单个 chunk，自动重试
-func (f *FlowProvider) uploadOneChunk(index int) (int64, error) {
+func (f *FlowProvider) uploadOneChunk(index int, client *http.Client) (int64, error) {
 	chunkSize := f.actualChunkSize
 	offset := int64(index) * chunkSize
 	expected := chunkSize
@@ -161,7 +176,7 @@ func (f *FlowProvider) uploadOneChunk(index int) (int64, error) {
 
 	var lastErr error
 	for attempt := 1; attempt <= f.MaxRetries; attempt++ {
-		n, err := f.uploadOneChunkOnce(index, offset, expected)
+		n, err := f.uploadOneChunkOnce(index, offset, expected, client)
 		if err == nil {
 			return n, nil
 		}
@@ -178,23 +193,18 @@ func (f *FlowProvider) uploadOneChunk(index int) (int64, error) {
 	return 0, fmt.Errorf("chunk %d 重试 %d 次仍失败: %w", index, f.MaxRetries, lastErr)
 }
 
-func (f *FlowProvider) uploadOneChunkOnce(index int, offset, expected int64) (int64, error) {
+func (f *FlowProvider) uploadOneChunkOnce(index int, offset, expected int64, client *http.Client) (int64, error) {
 	file, err := os.Open(f.FileInfo.Path)
 	if err != nil {
 		return 0, err
 	}
 	defer file.Close()
 
-	if _, err := file.Seek(offset, io.SeekStart); err != nil {
-		return 0, err
-	}
-	buf := make([]byte, expected)
-	if _, err := io.ReadFull(file, buf); err != nil {
-		return 0, fmt.Errorf("读取 chunk %d 失败: %w", index, err)
-	}
+	// 用 SectionReader 避免将整个 chunk 读入内存
+	section := io.NewSectionReader(file, offset, expected)
 
 	url := fmt.Sprintf("%s?index=%d", f.chunkUploadURL, index)
-	req, err := http.NewRequest("PUT", url, bytes.NewReader(buf))
+	req, err := http.NewRequest("PUT", url, section)
 	if err != nil {
 		return 0, err
 	}
@@ -204,7 +214,6 @@ func (f *FlowProvider) uploadOneChunkOnce(index int, offset, expected int64) (in
 		req.Header.Set("X-API-Key", f.APIKey)
 	}
 
-	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err

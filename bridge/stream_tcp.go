@@ -197,27 +197,41 @@ func (ffb *FileFlowBridge) validateStreamConnection(authToken string) bool {
 	return true
 }
 
+// providerIdleTimeout：TCP provider 连接建立后，若在此时间内没有下载端到来，
+// 视为 provider 建立了连接但无人下载，主动清理避免连接和并发槽长时间被占用。
+const providerIdleTimeout = 10 * time.Minute
+
 // monitorConnectionHealth 既做 housekeeping，也通过 bufio.Reader.Peek 探测
 // provider 是否在下载端到来前主动断开。
 //
 // 探测语义：
 //   - 设置短读超时，调用 reader.Peek(1)
-//   - timeout → 正常活着，继续等
-//   - EOF / RST / 其他错误 → provider 已断开，立即 removeFileResources
+//   - timeout -> 正常活着，继续等
+//   - EOF / RST / 其他错误 -> provider 已断开，立即 removeFileResources
 //
 // 关键：Peek 不消费字节；下载端到达后 pumpDownload 仍能从同一 reader 读到首字节。
 // 一旦下载端进入 pumpDownload，metadata.Status 变成 "downloading"，
 // 本协程检测到后退出探测分支，避免与下载读循环竞争 ReadDeadline。
+//
+// 超时清理：若 providerIdleTimeout 内仍无下载端到来，主动 removeFileResources，
+// 避免 provider 建立连接后断开/挂起但 Peek 无法检测到的场景下资源被长期占用。
 func (ffb *FileFlowBridge) monitorConnectionHealth(conn *StreamConnection, authToken string) {
 	ticker := time.NewTicker(connectionHealthInterval)
 	defer ticker.Stop()
 
 	ffb.mu.RLock()
 	filename := "未知文件"
+	streamStarted := time.Time{}
 	if meta, ok := ffb.fileRegistry[authToken]; ok {
 		filename = meta.OriginalFilename
+		streamStarted = meta.StreamStarted
 	}
 	ffb.mu.RUnlock()
+
+	// 若 StreamStarted 为零值（理论不会），用当前时间兜底
+	if streamStarted.IsZero() {
+		streamStarted = time.Now()
+	}
 
 	// 仅 TCP 路径有 Conn；multipart / WS 路径走各自的清理。
 	bufReader, _ := conn.Reader.(*bufio.Reader)
@@ -240,6 +254,15 @@ func (ffb *FileFlowBridge) monitorConnectionHealth(conn *StreamConnection, authT
 			// 不要再去并发 Peek 同一个 reader，避免抢字节 + 抢超时。
 			if meta != nil && meta.Status == "downloading" {
 				continue
+			}
+
+			// provider 连接建立后长时间无下载端到来，主动清理。
+			// 防止 provider 断开但 Peek 无法检测（如半开连接）时资源被长期占用。
+			if time.Since(streamStarted) >= providerIdleTimeout {
+				logWarn("📭 TCP provider 等待下载端超时 (%v)，主动清理: %s (token_id: %s)",
+					providerIdleTimeout, filename, authToken)
+				ffb.removeFileResources(authToken)
+				return
 			}
 
 			// 还没下载端连进来。轻量 peek 一字节探测 provider 是否已断开。

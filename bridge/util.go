@@ -141,6 +141,39 @@ func isRunningInContainer() bool {
 	return false
 }
 
+// ==================== HTTP 头安全 ====================
+
+// sanitizeContentDispositionFilename 对放入 Content-Disposition 的 filename 做清洗，
+// 防止 CR/LF 注入和引号转义破坏响应头。
+// 规则：
+//   - 去掉 \r \n，防止头注入
+//   - 转义双引号为反斜杠转义
+//   - 去掉其他控制字符
+func sanitizeContentDispositionFilename(name string) string {
+	if name == "" {
+		return "file"
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch {
+		case r == '"':
+			b.WriteString(`\"`)
+		case r == '\r' || r == '\n':
+			// 丢弃换行，防止头注入
+		case r < 0x20 || r == 0x7f:
+			// 丢弃其他控制字符
+		default:
+			b.WriteRune(r)
+		}
+	}
+	s := b.String()
+	if s == "" {
+		return "file"
+	}
+	return s
+}
+
 // ==================== Token 生成 ====================
 
 // createNewID 在 6..32 范围内生成密码学安全 ID；超出范围回退到 UUID

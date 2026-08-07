@@ -25,6 +25,11 @@ func (ffb *FileFlowBridge) cleanupResources() {
 	}
 }
 
+// resumableStaleTTL：resumable 上传若距最后一次收到 chunk 超过此时间仍未完成，
+// 视为 provider 已放弃（崩溃 / 断网 / 关机），提前清理临时文件。
+// 短于 ExpiresAt（2h），避免大 .part 文件长时间占用磁盘。
+const resumableStaleTTL = 30 * time.Minute
+
 // cleanupExpiredFiles 单次清理已过期文件，便于测试与定时任务复用
 func (ffb *FileFlowBridge) cleanupExpiredFiles(currentTime time.Time) []string {
 	var expiredFiles []string
@@ -34,6 +39,15 @@ func (ffb *FileFlowBridge) cleanupExpiredFiles(currentTime time.Time) []string {
 	for authToken, metadata := range ffb.fileRegistry {
 		if metadata.ExpiresAt.Before(currentTime) {
 			expiredFiles = append(expiredFiles, authToken)
+			continue
+		}
+		// resumable 未完成且上传停滞超过 resumableStaleTTL：
+		// provider 很可能已放弃，提前回收临时文件和注册表项。
+		if metadata.Resumable && !metadata.uploadReady.Load() {
+			last := metadata.LastChunkAt()
+			if !last.IsZero() && currentTime.Sub(last) >= resumableStaleTTL {
+				expiredFiles = append(expiredFiles, authToken)
+			}
 		}
 	}
 	for authToken, completedAt := range ffb.downloadCompletedAt {

@@ -49,7 +49,7 @@ func (ffb *FileFlowBridge) serveResumableDownload(
 	defer f.Close()
 
 	// 必要响应头：filename / SHA256 / FileID
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, metadata.OriginalFilename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeContentDispositionFilename(metadata.OriginalFilename)))
 	w.Header().Set("X-FileFlow-FileID", authToken)
 	w.Header().Set("X-FileFlow-Original-Filename", metadata.OriginalFilename)
 	if metadata.ExpectedSHA256 != "" {
@@ -74,9 +74,13 @@ func (ffb *FileFlowBridge) serveResumableDownload(
 
 	if transferCompleted && metadata.ExpectedSHA256 != "" {
 		// 重新读临时文件做 hash；resumable 落盘比 stream 模式宽裕，可以离线校验
-		if _, err := f.Seek(0, io.SeekStart); err == nil {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			logError("❌ resumable SHA256 校验 seek 失败: %s: %v", authToken, err)
+		} else {
 			h := sha256.New()
-			if _, err := io.Copy(h, f); err == nil {
+			if _, err := io.Copy(h, f); err != nil {
+				logError("❌ resumable SHA256 校验读取失败: %s: %v", authToken, err)
+			} else {
 				got := hex.EncodeToString(h.Sum(nil))
 				if got != metadata.ExpectedSHA256 {
 					ffb.metrics.incHashMismatch()

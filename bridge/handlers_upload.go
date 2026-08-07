@@ -140,7 +140,12 @@ func (ffb *FileFlowBridge) handleFileUpload(w http.ResponseWriter, r *http.Reque
 		ffb.removeFileResources(authToken)
 	}
 
-	<-copyDone
+	// 等待 io.Copy goroutine 退出；加超时防止 shutdown 时客户端空闲导致永久阻塞
+	select {
+	case <-copyDone:
+	case <-time.After(10 * time.Second):
+		logWarn("⚠️ 上传 copy goroutine 未在超时内退出: %s (token_id: %s)", metadata.OriginalFilename, authToken)
+	}
 
 	logInfo("✅ 文件上传处理完成: %s (token_id: %s)", metadata.OriginalFilename, authToken)
 

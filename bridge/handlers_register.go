@@ -65,6 +65,12 @@ func (ffb *FileFlowBridge) handleFileRegistration(w http.ResponseWriter, r *http
 		return
 	}
 
+	if data.Size < 0 {
+		ffb.metrics.incRegisterError()
+		http.Error(w, "文件大小不能为负数", http.StatusBadRequest)
+		return
+	}
+
 	if data.Size > ffb.MaxFileSize {
 		ffb.metrics.incRegisterError()
 		http.Error(w, "文件大小超过限制", http.StatusRequestEntityTooLarge)

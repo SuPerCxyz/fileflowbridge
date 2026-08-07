@@ -672,6 +672,7 @@ func main() {
 		if err := provider.UploadChunked(); err != nil {
 			uploadErr = err
 			fmt.Println("❌ 上传失败:", err)
+			revokeNow("上传异常")
 			os.Exit(1)
 		}
 	} else {
@@ -679,6 +680,7 @@ func main() {
 		if err := provider.EstablishStreamConnection(); err != nil {
 			uploadErr = err
 			fmt.Println("❌ 传输失败:", err)
+			revokeNow("上传异常")
 			os.Exit(1)
 		}
 	}

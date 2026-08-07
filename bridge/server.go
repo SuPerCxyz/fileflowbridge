@@ -53,6 +53,7 @@ func (ffb *FileFlowBridge) initUploadSem() {
 
 // ensureTempDir 返回 resumable 临时文件根目录；首次调用时创建。
 // 权限 0o700：仅 bridge 进程 owner 可访问，防止多用户机器上其他用户读取 .part。
+// 同时清理上次运行遗留的 .part 文件（崩溃 / kill 后不会自动删除）。
 func (ffb *FileFlowBridge) ensureTempDir() (string, error) {
 	dir := ffb.TempDir
 	if dir == "" {
@@ -66,7 +67,28 @@ func (ffb *FileFlowBridge) ensureTempDir() (string, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		logWarn("temp-dir Chmod 0o700 失败: %s: %v", dir, err)
 	}
+	// 清理上次运行遗留的 .part 文件
+	cleanupStaleTempFiles(dir)
 	return dir, nil
+}
+
+// cleanupStaleTempFiles 删除 TempDir 下的 .part 文件
+func cleanupStaleTempFiles(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if len(name) > 5 && name[len(name)-5:] == ".part" {
+			if err := os.Remove(filepath.Join(dir, name)); err == nil {
+				logInfo("🧹 清理遗留临时文件: %s", name)
+			}
+		}
+	}
 }
 
 // buildRouter 构造完整路由（独立函数，便于测试复用）
@@ -105,8 +127,10 @@ func (ffb *FileFlowBridge) StartServer() error {
 	handler := ffb.buildRouter()
 
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf(":%d", ffb.HTTPPort),
-		Handler: handler,
+		Addr:              fmt.Sprintf(":%d", ffb.HTTPPort),
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", ffb.TCPPort))
@@ -133,6 +157,8 @@ func (ffb *FileFlowBridge) StartServer() error {
 		}
 		if err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP服务器错误: %v", err)
+			// HTTP 启动失败必须触发关闭，否则主 goroutine 会永久阻塞在 ShutdownEvent
+			ffb.TriggerShutdown()
 		}
 	}()
 

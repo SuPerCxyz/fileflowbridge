@@ -14,36 +14,65 @@ import (
 func (ffb *FileFlowBridge) handleStatusCheck(w http.ResponseWriter, r *http.Request) {
 	authToken := chi.URLParam(r, "auth_token")
 
+	// 在锁内拷贝所有需要的字段，避免锁外读取可变字段（如 Status）造成数据竞争
 	ffb.mu.RLock()
 	metadata, exists := ffb.fileRegistry[authToken]
 	completed := ffb.downloadCompleted[authToken]
-	ffb.mu.RUnlock()
-
 	if !exists {
+		ffb.mu.RUnlock()
 		http.Error(w, "文件未找到", http.StatusNotFound)
 		return
 	}
+	// 拷贝快照
+	snapshot := struct {
+		Filename           string
+		OriginalFilename   string
+		Size               int64
+		Status             string
+		ClientIP           string
+		RegisteredAt       time.Time
+		ExpiresAt          time.Time
+		ExpectedSHA256     string
+		MaxDownloads       int
+		CompletedDownloads int
+		StreamStarted      time.Time
+		ClientAddress      string
+	}{
+		Filename:           metadata.Filename,
+		OriginalFilename:   metadata.OriginalFilename,
+		Size:               metadata.Size,
+		Status:             metadata.Status,
+		ClientIP:           metadata.ClientIP,
+		RegisteredAt:       metadata.RegisteredAt,
+		ExpiresAt:          metadata.ExpiresAt,
+		ExpectedSHA256:     metadata.ExpectedSHA256,
+		MaxDownloads:       metadata.MaxDownloads,
+		CompletedDownloads: metadata.CompletedDownloads,
+		StreamStarted:      metadata.StreamStarted,
+		ClientAddress:      metadata.ClientAddress,
+	}
+	ffb.mu.RUnlock()
 
 	responseData := map[string]interface{}{
-		"filename":            metadata.Filename,
-		"original_filename":   metadata.OriginalFilename,
-		"size":                metadata.Size,
-		"status":              metadata.Status,
-		"client_ip":           metadata.ClientIP,
-		"registered_at":       metadata.RegisteredAt.Format(time.RFC3339),
-		"expires_at":          metadata.ExpiresAt.Format(time.RFC3339),
+		"filename":            snapshot.Filename,
+		"original_filename":   snapshot.OriginalFilename,
+		"size":                snapshot.Size,
+		"status":              snapshot.Status,
+		"client_ip":           snapshot.ClientIP,
+		"registered_at":       snapshot.RegisteredAt.Format(time.RFC3339),
+		"expires_at":          snapshot.ExpiresAt.Format(time.RFC3339),
 		"download_completed":  completed,
-		"max_downloads":       metadata.MaxDownloads,
-		"completed_downloads": metadata.CompletedDownloads,
+		"max_downloads":       snapshot.MaxDownloads,
+		"completed_downloads": snapshot.CompletedDownloads,
 	}
-	if metadata.ExpectedSHA256 != "" {
-		responseData["sha256"] = metadata.ExpectedSHA256
+	if snapshot.ExpectedSHA256 != "" {
+		responseData["sha256"] = snapshot.ExpectedSHA256
 	}
-	if !metadata.StreamStarted.IsZero() {
-		responseData["stream_started"] = metadata.StreamStarted.Format(time.RFC3339)
+	if !snapshot.StreamStarted.IsZero() {
+		responseData["stream_started"] = snapshot.StreamStarted.Format(time.RFC3339)
 	}
-	if metadata.ClientAddress != "" {
-		responseData["client_address"] = metadata.ClientAddress
+	if snapshot.ClientAddress != "" {
+		responseData["client_address"] = snapshot.ClientAddress
 	}
 
 	w.Header().Set("Content-Type", "application/json")

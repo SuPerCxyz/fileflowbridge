@@ -56,6 +56,13 @@ type FileMetadata struct {
 	ReceivedBytes int64     `json:"received_bytes,omitempty"`
 	UploadReadyAt time.Time `json:"upload_ready_at,omitempty"`
 
+	// lastChunkAt 记录最后一次收到 chunk 的时间。
+	// 用于 cleanupExpiredFiles 判断 resumable 上传是否已停滞：
+	// 若距 lastChunkAt 超过 resumableStaleTTL 仍未完成，视为 provider 已放弃，
+	// 提前清理临时文件，避免大文件 .part 长时间占用磁盘。
+	// 受 chunkMu 保护。
+	lastChunkAt time.Time
+
 	// receivedChunks 用位集存储已收 chunk index：第 i 位为 1 表示 index=i 已收。
 	// 相比 []bool 内存降为 1/8（4 KiB chunk × 100 GiB 文件 ≈ 3.2 MB vs 26 MB）。
 	// 受 chunkMu 保护。
@@ -88,6 +95,7 @@ func (m *FileMetadata) MarkChunkReceived(index int, n int64) (newlyReceived, all
 	}
 	m.receivedChunks[word] |= bit
 	m.ReceivedBytes += n
+	m.lastChunkAt = time.Now()
 	if m.missingCount > 0 {
 		m.missingCount--
 	}
@@ -105,6 +113,13 @@ func (m *FileMetadata) HasChunk(index int) bool {
 		return false
 	}
 	return m.receivedChunks[word]&bit != 0
+}
+
+// LastChunkAt 返回最后一次收到 chunk 的时间（用于 cleanup 判断停滞）。
+func (m *FileMetadata) LastChunkAt() time.Time {
+	m.chunkMu.Lock()
+	defer m.chunkMu.Unlock()
+	return m.lastChunkAt
 }
 
 // SnapshotChunkStatus 返回上传状态快照供 /status 接口使用。
@@ -193,6 +208,8 @@ func (wsConn *WebSocketStreamConnection) writeJSON(v interface{}) error {
 	if wsConn.Conn == nil {
 		return io.EOF
 	}
+	// 防止对端卡住时 WriteJSON 无限阻塞
+	_ = wsConn.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return wsConn.Conn.WriteJSON(v)
 }
 
@@ -203,6 +220,8 @@ func (wsConn *WebSocketStreamConnection) writeMessage(messageType int, data []by
 	if wsConn.Conn == nil {
 		return io.EOF
 	}
+	// 防止对端卡住时 WriteMessage 无限阻塞
+	_ = wsConn.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return wsConn.Conn.WriteMessage(messageType, data)
 }
 
