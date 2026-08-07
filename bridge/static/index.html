@@ -3,51 +3,30 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <title>FileFlow Bridge - 文件上传</title>
   <style>
     :root {
-      --bg: #f4f6f8;
+      --bg-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       --surface: #ffffff;
       --surface-2: #f7fafc;
-      --text: #1a202c;
+      --text: #2d3748;
       --text-secondary: #4a5568;
       --text-tertiary: #718096;
       --border: #e2e8f0;
       --border-strong: #cbd5e0;
-      --accent: #5a67d8;
-      --accent-2: #805ad5;
-      --accent-gradient: linear-gradient(135deg, #5a67d8 0%, #805ad5 100%);
+      --accent: #667eea;
+      --accent-2: #764ba2;
+      --accent-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      --accent-gradient-h: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
       --success: #38a169;
       --success-bg: #c6f6d5;
       --error: #e53e3e;
       --error-bg: #fed7d7;
       --warning: #d69e2e;
-      --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-      --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.06);
-      --radius: 12px;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0d1117;
-        --surface: #161b22;
-        --surface-2: #1c2128;
-        --text: #e2e8f0;
-        --text-secondary: #a0aec0;
-        --text-tertiary: #718096;
-        --border: #30363d;
-        --border-strong: #484f58;
-        --accent: #7c86e7;
-        --accent-2: #9f7aea;
-        --accent-gradient: linear-gradient(135deg, #7c86e7 0%, #9f7aea 100%);
-        --success: #48bb78;
-        --success-bg: rgba(72, 187, 120, 0.15);
-        --error: #fc8181;
-        --error-bg: rgba(252, 129, 129, 0.15);
-        --warning: #ecc94b;
-        --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-        --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);
-      }
+      --shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+      --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.06);
+      --radius: 15px;
     }
 
     * {
@@ -57,41 +36,60 @@
     }
 
     body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
-      background: var(--bg);
-      color: var(--text);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: var(--bg-gradient);
       min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      color: var(--text);
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
     }
 
     .app {
-      max-width: 720px;
-      margin: 0 auto;
-      padding: 32px 24px 64px;
+      width: 100%;
+      max-width: 640px;
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 32px;
     }
 
     header {
       margin-bottom: 24px;
+      text-align: center;
     }
 
     h1 {
-      font-size: 1.75rem;
+      color: var(--text-secondary);
+      font-size: 2.2em;
       font-weight: 700;
       letter-spacing: -0.02em;
     }
 
     .subtitle {
       color: var(--text-tertiary);
-      font-size: 0.95rem;
-      margin-top: 4px;
+      font-size: 1.05em;
+      margin-top: 6px;
+    }
+
+    .subtitle a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .subtitle a:hover {
+      text-decoration: underline;
     }
 
     .options {
-      background: var(--surface);
+      background: var(--surface-2);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
+      border-radius: 10px;
       margin-bottom: 20px;
       overflow: hidden;
     }
@@ -104,7 +102,7 @@
       padding: 12px 16px;
       background: transparent;
       border: none;
-      color: var(--text);
+      color: var(--text-secondary);
       font-size: 0.95rem;
       font-weight: 600;
       cursor: pointer;
@@ -179,7 +177,7 @@
       padding: 10px 12px;
       border: 1px solid var(--border-strong);
       border-radius: 8px;
-      background: var(--surface-2);
+      background: var(--surface);
       color: var(--text);
       font-size: 0.95rem;
     }
@@ -187,7 +185,7 @@
     .input-wrap input:focus {
       outline: none;
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(90, 103, 216, 0.15);
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
     }
 
     .input-wrap button {
@@ -198,14 +196,14 @@
       justify-content: center;
       border: 1px solid var(--border-strong);
       border-radius: 8px;
-      background: var(--surface-2);
+      background: var(--surface);
       color: var(--text-secondary);
       cursor: pointer;
       font-size: 1rem;
     }
 
     .input-wrap button:hover {
-      background: var(--border);
+      background: var(--surface-2);
     }
 
     .api-key-actions {
@@ -237,41 +235,39 @@
 
     .drop-zone {
       position: relative;
-      border: 2px dashed var(--border-strong);
-      border-radius: var(--radius);
-      background: var(--surface);
+      border: 3px dashed var(--border-strong);
+      border-radius: 10px;
+      background: var(--surface-2);
       padding: 40px 24px;
       text-align: center;
       cursor: pointer;
-      transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
-      box-shadow: var(--shadow-card);
+      transition: all 0.3s ease;
       margin-bottom: 16px;
     }
 
     .drop-zone:hover,
     .drop-zone.drag-over {
       border-color: var(--accent);
-      background: var(--surface-2);
+      background-color: #ebf8ff;
     }
 
     .drop-zone:focus-visible {
       outline: none;
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(90, 103, 216, 0.2);
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
     }
 
     .drop-icon {
-      font-size: 2.25rem;
-      color: var(--accent);
-      margin-bottom: 8px;
-      opacity: 0.9;
+      font-size: 3em;
+      color: #a0aec0;
+      margin-bottom: 10px;
     }
 
     .drop-main {
-      font-size: 1.1rem;
+      font-size: 1rem;
       font-weight: 600;
-      color: var(--text);
-      margin-bottom: 4px;
+      color: var(--text-secondary);
+      margin-bottom: 5px;
     }
 
     .drop-sub {
@@ -300,14 +296,14 @@
       align-items: center;
       justify-content: center;
       gap: 6px;
-      padding: 8px 16px;
+      padding: 10px 24px;
       border: none;
-      border-radius: 8px;
+      border-radius: 25px;
       font-size: 0.9rem;
       font-weight: 600;
       cursor: pointer;
-      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
-      min-height: 36px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.15s ease;
+      min-height: 40px;
     }
 
     .btn-primary {
@@ -316,8 +312,8 @@
     }
 
     .btn-primary:hover:not(:disabled) {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(90, 103, 216, 0.25);
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
     }
 
     .btn-secondary {
@@ -345,6 +341,7 @@
     .btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+      transform: none;
     }
 
     .status-summary {
@@ -359,9 +356,9 @@
     }
 
     .task-card {
-      background: var(--surface);
+      background: var(--surface-2);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
+      border-radius: 10px;
       box-shadow: var(--shadow-card);
       padding: 16px;
       animation: slideIn 0.25s ease;
@@ -374,7 +371,7 @@
 
     .task-card.completed {
       border-color: var(--success);
-      background: linear-gradient(to right, var(--surface), var(--success-bg));
+      background: linear-gradient(to right, var(--surface-2), var(--success-bg));
     }
 
     .task-card.error {
@@ -435,23 +432,25 @@
     .task-actions .btn {
       min-width: 36px;
       min-height: 36px;
-      padding: 0 10px;
+      padding: 0 12px;
+      border-radius: 8px;
     }
 
     .progress-track {
-      height: 6px;
+      height: 15px;
       background: var(--border);
-      border-radius: 3px;
+      border-radius: 8px;
       overflow: hidden;
       margin-bottom: 10px;
+      position: relative;
     }
 
     .progress-fill {
       height: 100%;
       width: 0%;
-      background: var(--accent-gradient);
-      border-radius: 3px;
-      transition: width 0.2s ease;
+      background: var(--accent-gradient-h);
+      border-radius: 8px;
+      transition: width 0.3s ease;
     }
 
     .task-card.completed .progress-fill {
@@ -508,7 +507,7 @@
     .task-link a {
       flex: 1;
       min-width: 0;
-      color: var(--accent);
+      color: var(--text-secondary);
       text-decoration: none;
       font-size: 0.85rem;
       white-space: nowrap;
@@ -518,18 +517,21 @@
 
     .task-link a:hover {
       text-decoration: underline;
+      color: var(--accent);
     }
 
     .task-link .btn {
       flex-shrink: 0;
       min-height: 32px;
+      border-radius: 6px;
+      padding: 6px 14px;
     }
 
     .task-message {
       margin-top: 10px;
       font-size: 0.85rem;
       padding: 8px 10px;
-      border-radius: 8px;
+      border-radius: 6px;
       display: none;
     }
 
@@ -540,6 +542,7 @@
     .task-message.error {
       color: var(--error);
       background: var(--error-bg);
+      border: 1px solid #feb2b2;
     }
 
     .task-message.warning {
@@ -549,7 +552,8 @@
 
     .task-message.info {
       color: var(--text-secondary);
-      background: var(--surface-2);
+      background: var(--surface);
+      border: 1px solid var(--border);
     }
 
     .hidden {
@@ -570,11 +574,12 @@
 
     @media (max-width: 767px) {
       .app {
-        padding: 20px 16px 48px;
+        padding: 20px;
+        margin: 10px;
       }
 
       h1 {
-        font-size: 1.5rem;
+        font-size: 1.8em;
       }
 
       .drop-zone {
@@ -582,20 +587,12 @@
       }
 
       .drop-icon {
-        font-size: 1.75rem;
-      }
-
-      .drop-main {
-        font-size: 1rem;
-      }
-
-      .drop-sub {
-        font-size: 0.8rem;
+        font-size: 2.2em;
       }
 
       .btn {
         min-height: 44px;
-        padding: 10px 14px;
+        padding: 10px 16px;
       }
 
       .task-actions .btn {
@@ -613,23 +610,11 @@
   <div class="app">
     <header>
       <h1>🌊 FileFlow Bridge</h1>
-      <p class="subtitle">边传边下的文件桥接 · <a href="/cli" style="color: var(--accent); text-decoration: none;">下载命令行工具</a></p>
+      <p class="subtitle">拖拽文件上传，立即获取下载链接 · <a href="/cli">下载命令行工具</a></p>
     </header>
 
-    <section class="options" aria-label="上传选项">
-      <button id="optionsToggle" class="options-toggle" aria-expanded="false" aria-controls="optionsPanel" type="button">
-        <span>⚙ 选项</span>
-      </button>
-      <div id="optionsPanel" class="options-panel" hidden>
-        <label class="toggle" title="启用 chunked PUT 断点续传">
-          <input type="checkbox" id="resumableToggle">
-          <span>启用断点续传 (chunked)</span>
-        </label>
-        <label class="toggle" title="上传前计算 SHA256，供服务端下载完成时校验">
-          <input type="checkbox" id="hashToggle">
-          <span>上传前计算 SHA256 校验</span>
-        </label>
-
+    <section class="options" aria-label="上传选项" id="optionsSection" style="display:none;">
+      <div id="optionsPanel">
         <div id="apiKeySection" class="api-key-section hidden">
           <label for="apiKeyInput">API Key</label>
           <div class="input-wrap">
@@ -651,17 +636,17 @@
       </div>
     </section>
 
-    <div id="dropZone" class="drop-zone" role="button" tabindex="0" aria-label="点击选择文件或拖拽文件到此处">
+    <div id="dropZone" class="drop-zone" role="button" tabindex="0" aria-label="拖拽文件到这里或点击选择文件">
       <input type="file" id="fileInput" multiple hidden>
-      <div class="drop-icon" aria-hidden="true">⬆</div>
-      <div class="drop-main">点击选择文件</div>
-      <div class="drop-sub">或将文件拖拽到此处，支持多文件</div>
+      <div class="drop-icon" aria-hidden="true">📁</div>
+      <div class="drop-main">拖拽文件到这里或点击选择文件</div>
+      <div class="drop-sub">支持任意类型文件，无大小限制</div>
       <div id="dropHint" class="drop-hint"></div>
     </div>
 
     <div class="toolbar">
-      <button id="clearCompleted" class="btn btn-secondary" type="button">清空已完成</button>
       <span id="statusSummary" class="status-summary"></span>
+      <button id="startUploadBtn" class="btn btn-primary" type="button" disabled>开始上传</button>
     </div>
 
     <div id="taskList" class="task-list"></div>
@@ -878,7 +863,7 @@
           refs.cancelBtn.classList.toggle('hidden', terminal);
           refs.retryBtn.classList.toggle('hidden', this.status !== 'error');
 
-          if (this.status === 'completed' && this.downloadUrl) {
+          if (this.downloadUrl && (this.status === 'uploading' || this.status === 'completed')) {
             refs.linkRow.classList.remove('hidden');
             refs.linkAnchor.href = this.downloadUrl;
             refs.linkAnchor.textContent = this.downloadUrl;
@@ -903,24 +888,21 @@
         progressPercent() {
           if (this.status === 'completed') return 100;
           if (!this.file.size) return 0;
-          const bytes = Math.max(this.bytesSent, this.bytesAcked);
-          return Math.min(100, (bytes / this.file.size) * 100);
+          return Math.min(100, (this.bytesAcked / this.file.size) * 100);
         }
 
         speedText() {
           if (this.status !== 'uploading' || !this.startTime) return '';
           const elapsed = (Date.now() - this.startTime) / 1000;
           if (elapsed < 0.5) return '';
-          const bytes = Math.max(this.bytesSent, this.bytesAcked);
-          const speed = bytes / elapsed;
+          const speed = this.bytesAcked / elapsed;
           return fmtSpeed(speed);
         }
 
         etaText() {
           if (this.status !== 'uploading' || !this.startTime) return '';
           const elapsed = (Date.now() - this.startTime) / 1000;
-          const bytes = Math.max(this.bytesSent, this.bytesAcked);
-          const speed = bytes / elapsed;
+          const speed = this.bytesAcked / elapsed;
           if (!speed) return '';
           const remaining = this.file.size - bytes;
           return 'ETA ' + fmtEta(remaining / speed);
@@ -1279,14 +1261,33 @@
 
         async copyLink() {
           if (!this.downloadUrl) return;
-          try {
-            await navigator.clipboard.writeText(this.downloadUrl);
+          const ok = await copyToClipboard(this.downloadUrl);
+          if (ok) {
             this.setMessage('下载链接已复制', 'info');
             setTimeout(() => this.clearMessage(), 2000);
-          } catch {
-            this.setMessage('复制失败，请手动复制', 'warning');
+          } else {
+            this.setMessage('复制失败，请手动选中链接复制', 'warning');
           }
         }
+      }
+
+      // 兼容非 HTTPS / 非 localhost 的复制：clipboard API 失败时回退到 execCommand
+      async function copyToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+          try { await navigator.clipboard.writeText(text); return true; } catch {}
+        }
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.top = '-9999px';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          return ok;
+        } catch { return false; }
       }
 
       function delay(ms, signal) {
@@ -1322,10 +1323,7 @@
 
         cacheElements() {
           this.els = {
-            optionsToggle: document.getElementById('optionsToggle'),
-            optionsPanel: document.getElementById('optionsPanel'),
-            resumableToggle: document.getElementById('resumableToggle'),
-            hashToggle: document.getElementById('hashToggle'),
+            optionsSection: document.getElementById('optionsSection'),
             apiKeySection: document.getElementById('apiKeySection'),
             apiKeyInput: document.getElementById('apiKeyInput'),
             apiKeyEye: document.getElementById('apiKeyEye'),
@@ -1336,7 +1334,7 @@
             dropZone: document.getElementById('dropZone'),
             fileInput: document.getElementById('fileInput'),
             dropHint: document.getElementById('dropHint'),
-            clearCompleted: document.getElementById('clearCompleted'),
+            startUploadBtn: document.getElementById('startUploadBtn'),
             statusSummary: document.getElementById('statusSummary'),
             taskList: document.getElementById('taskList'),
           };
@@ -1344,9 +1342,6 @@
 
         bindEvents() {
           const { els } = this;
-          els.optionsToggle.addEventListener('click', () => this.toggleOptions());
-          els.resumableToggle.addEventListener('change', (e) => { this.settings.resumable = e.target.checked; });
-          els.hashToggle.addEventListener('change', (e) => { this.settings.hash = e.target.checked; });
           els.apiKeyEye.addEventListener('click', () => this.toggleApiKeyVisibility());
           els.apiKeySave.addEventListener('click', () => this.saveApiKey());
           els.dropZone.addEventListener('click', () => els.fileInput.click());
@@ -1362,7 +1357,7 @@
             els.dropZone.addEventListener(name, () => els.dropZone.classList.remove('drag-over'), false);
           });
           els.dropZone.addEventListener('drop', (e) => this.handleFiles(e.dataTransfer.files));
-          els.clearCompleted.addEventListener('click', () => this.clearCompletedTasks());
+          els.startUploadBtn.addEventListener('click', () => this.manualStart());
           window.addEventListener('beforeunload', () => this.revokeAllActive());
           window.addEventListener('pagehide', () => this.revokeAllActive());
         }
@@ -1370,12 +1365,6 @@
         preventDefaults(e) {
           e.preventDefault();
           e.stopPropagation();
-        }
-
-        toggleOptions() {
-          const expanded = this.els.optionsToggle.getAttribute('aria-expanded') === 'true';
-          this.els.optionsToggle.setAttribute('aria-expanded', String(!expanded));
-          this.els.optionsPanel.hidden = expanded;
         }
 
         loadApiKey() {
@@ -1438,23 +1427,22 @@
 
         applyConfig() {
           if (this.config.requires_api_key || this.needsApiKey) {
+            this.els.optionsSection.style.display = '';
             this.els.apiKeySection.classList.remove('hidden');
-            this.els.optionsToggle.setAttribute('aria-expanded', 'true');
-            this.els.optionsPanel.hidden = false;
           } else {
             this.els.apiKeySection.classList.add('hidden');
+            this.els.optionsSection.style.display = 'none';
           }
           const max = this.config.max_file_size;
           const parallel = this.config.max_parallel_uploads;
           this.els.serverLimits.textContent = `最大文件 ${fmtBytes(max)} · 最多 ${parallel <= 0 ? '不限' : parallel} 个并发`;
-          this.els.dropHint.textContent = `最大 ${fmtBytes(max)}${this.config.resumable_supported ? ' · 断点续传可用' : ''}`;
+          this.els.dropHint.textContent = `最大 ${fmtBytes(max)}`;
         }
 
         promptForApiKey() {
           this.needsApiKey = true;
+          this.els.optionsSection.style.display = '';
           this.els.apiKeySection.classList.remove('hidden');
-          this.els.optionsToggle.setAttribute('aria-expanded', 'true');
-          this.els.optionsPanel.hidden = false;
           this.els.apiKeyInput.focus();
         }
 
@@ -1483,7 +1471,7 @@
           this.tasks.push(task);
           this.els.taskList.appendChild(task.el);
           this.updateSummary();
-          this.startNext();
+          this.updateStartBtn();
         }
 
         addExistingTask(task) {
@@ -1511,6 +1499,19 @@
             });
           }
           this.updateSummary();
+          this.updateStartBtn();
+        }
+
+        // 开始上传按钮：有待上传任务且无 API Key 阻塞时可用
+        updateStartBtn() {
+          const pending = this.tasks.some((t) => t.status === 'pending');
+          const blocked = this.config.requires_api_key && !this.settings.apiKey;
+          this.els.startUploadBtn.disabled = !pending || blocked;
+        }
+
+        // 手动触发上传入口
+        manualStart() {
+          this.startNext();
         }
 
         async register(file, sha256, signal) {
@@ -1551,6 +1552,7 @@
           }
           this.tasks = keep;
           this.updateSummary();
+          this.updateStartBtn();
         }
 
         revokeAllActive() {

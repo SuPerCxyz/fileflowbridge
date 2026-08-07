@@ -174,37 +174,39 @@
             点击下载文件
         </button>
 
-        <a href="/download/{{TOKEN}}/{{FILENAME}}" id="directDownloadLink" class="direct-link">直接下载链接</a>
-
         <div class="warning">
             ⚠️ 注意：此链接将在2小时后过期，请及时下载！
         </div>
 
         <div class="qr-section">
             <div class="qr-title">📱 扫码在移动端下载</div>
-            <div class="qr-code">
-                <canvas id="qrcode" width="150" height="150"></canvas>
-            </div>
+            <div class="qr-code" id="qrcode"></div>
         </div>
 
         <a href="/" class="back-link">← 返回首页</a>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
     <script>
-        // 页面加载后更新时间
         document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('uploadtime').textContent = new Date().toLocaleString();
+
+            // 生成二维码：指向当前下载页面 URL
+            var token = document.getElementById('fileid').textContent;
+            var filename = document.getElementById('filename').textContent;
+            var downloadUrl = window.location.origin + '/download/' + token + '/' + encodeURIComponent(filename);
+
+            var qr = qrcode(0, 'M');
+            qr.addData(downloadUrl);
+            qr.make();
+            document.getElementById('qrcode').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2 });
         });
 
         function downloadFile() {
-            // 构建下载URL，使用当前页面的认证令牌
-            const token = document.getElementById('fileid').textContent;
-            const filename = document.getElementById('filename').textContent;
-
-            const downloadUrl = `/download/${token}/${encodeURIComponent(filename)}`;
-
-            // 创建临时链接并触发下载
-            const link = document.createElement('a');
+            var token = document.getElementById('fileid').textContent;
+            var filename = document.getElementById('filename').textContent;
+            var downloadUrl = '/download/' + token + '/' + encodeURIComponent(filename);
+            var link = document.createElement('a');
             link.href = downloadUrl;
             link.download = filename;
             link.style.display = 'none';
@@ -212,59 +214,6 @@
             link.click();
             document.body.removeChild(link);
         }
-
-        function generateQRCode() {
-            const canvas = document.getElementById('qrcode');
-            const ctx = canvas.getContext('2d');
-
-            // 简化版二维码生成 - 实际部署时应使用专门的库如qrcode.js
-            // 这里只是简单展示二维码效果，实际应该引入qrcode.js库
-            drawSimpleQRCode(ctx, canvas.width, canvas.height);
-        }
-
-        function drawSimpleQRCode(ctx, width, height) {
-            // 清空画布
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, width, height);
-
-            // 绘制简化版二维码边框
-            ctx.fillStyle = '#000000';
-
-            // 角落定位图案
-            drawPositionMarker(ctx, 10, 10);
-            drawPositionMarker(ctx, width - 40, 10);
-            drawPositionMarker(ctx, 10, height - 40);
-
-            // 填充一些随机方块模拟二维码
-            for (let x = 0; x < width; x += 10) {
-                for (let y = 0; y < height; y += 10) {
-                    if (Math.random() > 0.6 && !isPositionMarkerArea(x, y, width, height)) {
-                        ctx.fillRect(x, y, 8, 8);
-                    }
-                }
-            }
-        }
-
-        function drawPositionMarker(ctx, x, y) {
-            ctx.fillStyle = '#000000';
-            // 外框
-            ctx.fillRect(x, y, 30, 30);
-            // 内框
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(x + 5, y + 5, 20, 20);
-            // 中心点
-            ctx.fillStyle = '#000000';
-            ctx.fillRect(x + 10, y + 10, 10, 10);
-        }
-
-        function isPositionMarkerArea(x, y, width, height) {
-            return (x <= 40 && y <= 40) ||
-                   (x >= width - 50 && y <= 40) ||
-                   (x <= 40 && y >= height - 50);
-        }
-
-        // 生成二维码
-        generateQRCode();
     </script>
 </body>
 </html>

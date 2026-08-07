@@ -3,73 +3,58 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <title>下载命令行工具 - FileFlow Bridge</title>
   <style>
     :root {
-      --bg: #f4f6f8;
+      --bg-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       --surface: #ffffff;
       --surface-2: #f7fafc;
-      --text: #1a202c;
+      --text: #2d3748;
       --text-secondary: #4a5568;
       --text-tertiary: #718096;
       --border: #e2e8f0;
       --border-strong: #cbd5e0;
-      --accent: #5a67d8;
-      --accent-2: #805ad5;
-      --accent-gradient: linear-gradient(135deg, #5a67d8 0%, #805ad5 100%);
+      --accent: #667eea;
+      --accent-2: #764ba2;
+      --accent-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       --success: #38a169;
       --success-bg: #c6f6d5;
       --error: #e53e3e;
       --error-bg: #fed7d7;
-      --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-      --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.06);
-      --radius: 12px;
+      --shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+      --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.06);
+      --radius: 15px;
       --code-bg: #1e2430;
       --code-text: #e2e8f0;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0d1117;
-        --surface: #161b22;
-        --surface-2: #1c2128;
-        --text: #e2e8f0;
-        --text-secondary: #a0aec0;
-        --text-tertiary: #718096;
-        --border: #30363d;
-        --border-strong: #484f58;
-        --accent: #7c86e7;
-        --accent-2: #9f7aea;
-        --accent-gradient: linear-gradient(135deg, #7c86e7 0%, #9f7aea 100%);
-        --success: #48bb78;
-        --success-bg: rgba(72, 187, 120, 0.15);
-        --error: #fc8181;
-        --error-bg: rgba(252, 129, 129, 0.15);
-        --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-        --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);
-        --code-bg: #0d1117;
-        --code-text: #e2e8f0;
-      }
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
-      background: var(--bg);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: var(--bg-gradient);
       color: var(--text);
       min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
     }
 
     .app {
-      max-width: 720px;
-      margin: 0 auto;
-      padding: 32px 24px 64px;
+      width: 100%;
+      max-width: 640px;
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 32px;
     }
 
-    header { margin-bottom: 24px; }
+    header { margin-bottom: 24px; text-align: center; }
 
     .header-row {
       display: flex;
@@ -78,16 +63,25 @@
       gap: 12px;
     }
 
+    .bottom-bar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
     h1 {
-      font-size: 1.75rem;
+      color: var(--text-secondary);
+      font-size: 2.2em;
       font-weight: 700;
       letter-spacing: -0.02em;
     }
 
     .subtitle {
       color: var(--text-tertiary);
-      font-size: 0.95rem;
-      margin-top: 4px;
+      font-size: 1.05em;
+      margin-top: 6px;
     }
 
     .btn {
@@ -95,15 +89,15 @@
       align-items: center;
       justify-content: center;
       gap: 6px;
-      padding: 8px 16px;
+      padding: 10px 24px;
       border: none;
-      border-radius: 8px;
+      border-radius: 25px;
       font-size: 0.9rem;
       font-weight: 600;
       cursor: pointer;
       text-decoration: none;
-      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
-      min-height: 36px;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.15s ease;
+      min-height: 40px;
     }
 
     .btn-primary {
@@ -112,8 +106,8 @@
     }
 
     .btn-primary:hover:not(:disabled) {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(90, 103, 216, 0.25);
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
     }
 
     .btn-secondary {
@@ -123,12 +117,12 @@
     }
 
     .btn-secondary:hover:not(:disabled) { background: var(--border); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
     .card {
-      background: var(--surface);
+      background: var(--surface-2);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
+      border-radius: 10px;
       box-shadow: var(--shadow-card);
       padding: 20px;
       margin-bottom: 16px;
@@ -173,8 +167,8 @@
 
     @media (max-width: 600px) {
       .platform-grid { grid-template-columns: 1fr; }
-      .app { padding: 20px 16px 48px; }
-      h1 { font-size: 1.5rem; }
+      .app { padding: 20px; margin: 10px; }
+      h1 { font-size: 1.8em; }
     }
 
     .platform-btn {
@@ -197,6 +191,17 @@
     .platform-btn:hover {
       border-color: var(--accent);
       background: var(--surface);
+    }
+
+    .platform-btn.current {
+      border-color: var(--accent);
+      background: var(--accent-gradient);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .platform-btn.current .size {
+      color: rgba(255, 255, 255, 0.8);
     }
 
     .platform-btn .size {
@@ -268,27 +273,11 @@
 <body>
   <div class="app">
     <header>
-      <div class="header-row">
-        <div>
-          <h1>📥 命令行工具</h1>
-          <p class="subtitle">fileflowprovider - 终端上传文件到 FileFlow Bridge</p>
-        </div>
-        <a href="/" class="btn btn-secondary">← 返回上传</a>
-      </div>
+      <h1>📥 命令行工具</h1>
+      <p class="subtitle">fileflowprovider - 终端上传文件到 FileFlow Bridge</p>
     </header>
 
     <div id="statusMsg" class="status-msg"></div>
-
-    <div id="recommendCard" class="card recommend hidden">
-      <div class="card-title">
-        <span id="recommendTitle">推荐下载</span>
-        <span id="recommendBadge" class="platform-badge"></span>
-      </div>
-      <div class="card-meta" id="recommendMeta"></div>
-      <a id="recommendBtn" class="btn btn-primary" href="#" download>
-        ⬇ 下载 fileflowprovider
-      </a>
-    </div>
 
     <div class="card">
       <div class="card-title">所有平台</div>
@@ -300,10 +289,12 @@
 
     <div class="card usage">
       <h3>使用方法</h3>
-      <div style="overflow: auto;">
-        <button id="copyUsage" class="btn btn-secondary copy-btn">复制</button>
-        <div id="usageCode" class="code-block"></div>
-      </div>
+      <div id="usageCode" class="code-block"></div>
+    </div>
+
+    <div class="bottom-bar">
+      <a href="/" class="btn btn-secondary">← 返回上传</a>
+      <button id="copyUsage" class="btn btn-secondary">复制</button>
     </div>
   </div>
 
@@ -312,11 +303,6 @@
       'use strict';
 
       const statusMsg = document.getElementById('statusMsg');
-      const recommendCard = document.getElementById('recommendCard');
-      const recommendTitle = document.getElementById('recommendTitle');
-      const recommendBadge = document.getElementById('recommendBadge');
-      const recommendMeta = document.getElementById('recommendMeta');
-      const recommendBtn = document.getElementById('recommendBtn');
       const releaseMeta = document.getElementById('releaseMeta');
       const platformGrid = document.getElementById('platformGrid');
       const usageCode = document.getElementById('usageCode');
@@ -366,10 +352,12 @@
       };
 
       function matchAsset(assets, os, arch) {
-        const key = os + '-' + arch;
-        const target = 'fileflowprovider-' + key;
+        // 资产名格式: fileflowprovider-{version}-{os}-{arch}[.exe]
+        // 用 -{os}-{arch} 匹配，跳过中间的版本号
+        var suffix = '-' + os + '-' + arch;
         for (const a of assets) {
-          if (a.name.indexOf(target) !== -1) return a;
+          var n = a.name.toLowerCase();
+          if (n.indexOf(suffix) !== -1) return a;
         }
         return null;
       }
@@ -379,15 +367,21 @@
         const isWin = cur.os === 'windows';
         const binName = isWin ? 'fileflowprovider.exe' : 'fileflowprovider';
         const url = serverBase || 'https://ffb.soocoo.xyz';
-        const lines = [
-          '<span class="cmt"># 1. 下载后赋予执行权限（Linux / macOS）</span>',
-          '<span class="var">$</span> chmod +x ' + binName,
-          '',
-          '<span class="cmt"># 2. 上传文件</span>',
-          '<span class="var">$</span> ./' + binName + ' ' + url + ' ./你的文件.zip',
-          '',
-          '<span class="cmt"># 3. 终端会输出下载链接，发送给接收者即可</span>',
-        ];
+        const lines = [];
+        if (isWin) {
+          lines.push('<span class="cmt"># Windows: 在 PowerShell 或 CMD 中运行</span>');
+          lines.push('<span class="var">&gt;</span> .\\' + binName + ' ' + url + ' .\\你的文件.zip');
+          lines.push('');
+          lines.push('<span class="cmt"># 终端会输出下载链接，发送给接收者即可</span>');
+        } else {
+          lines.push('<span class="cmt"># 1. 下载后赋予执行权限（Linux / macOS）</span>');
+          lines.push('<span class="var">$</span> chmod +x ' + binName);
+          lines.push('');
+          lines.push('<span class="cmt"># 2. 上传文件</span>');
+          lines.push('<span class="var">$</span> ./' + binName + ' ' + url + ' ./你的文件.zip');
+          lines.push('');
+          lines.push('<span class="cmt"># 3. 终端会输出下载链接，发送给接收者即可</span>');
+        }
         return lines.join('\n');
       }
 
@@ -416,16 +410,6 @@
           }
 
           const cur = detectPlatform();
-          const recommended = matchAsset(assets, cur.os, cur.arch);
-
-          if (recommended) {
-            const key = cur.os + '-' + cur.arch;
-            recommendBadge.textContent = platformLabels[key] || key;
-            recommendMeta.textContent = fmtBytes(recommended.size);
-            recommendBtn.href = recommended.browser_download_url;
-            recommendBtn.download = '';
-            recommendCard.classList.remove('hidden');
-          }
 
           platformGrid.innerHTML = '';
           const keys = Object.keys(platformLabels);
@@ -435,11 +419,12 @@
             const arch = parts[1];
             const a = matchAsset(assets, os, arch);
             if (!a) continue;
+            const isCurrent = (os === cur.os && arch === cur.arch);
             const btn = document.createElement('a');
-            btn.className = 'platform-btn';
+            btn.className = 'platform-btn' + (isCurrent ? ' current' : '');
             btn.href = a.browser_download_url;
             btn.download = '';
-            btn.innerHTML = '<span>' + (platformLabels[key] || key) + '</span>' +
+            btn.innerHTML = '<span>' + (platformLabels[key] || key) + (isCurrent ? ' ✓' : '') + '</span>' +
               '<span class="size">' + fmtBytes(a.size) + '</span>';
             platformGrid.appendChild(btn);
           }
@@ -451,13 +436,25 @@
         }
       }
 
-      copyUsage.addEventListener('click', function () {
+      copyUsage.addEventListener('click', async function () {
         const text = usageCode.textContent;
-        if (navigator.clipboard) {
-          navigator.clipboard.writeText(text).then(function () {
-            copyUsage.textContent = '已复制';
-            setTimeout(function () { copyUsage.textContent = '复制'; }, 1500);
-          });
+        let ok = false;
+        if (navigator.clipboard && window.isSecureContext) {
+          try { await navigator.clipboard.writeText(text); ok = true; } catch {}
+        }
+        if (!ok) {
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed'; ta.style.top = '-9999px'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.select();
+            ok = document.execCommand('copy');
+            document.body.removeChild(ta);
+          } catch {}
+        }
+        if (ok) {
+          copyUsage.textContent = '已复制';
+          setTimeout(function () { copyUsage.textContent = '复制'; }, 1500);
         }
       });
 
