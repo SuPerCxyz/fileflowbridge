@@ -274,6 +274,11 @@ type FileFlowBridge struct {
 	TLSCertFile    string   // 可选：TLS 证书路径
 	TLSKeyFile     string   // 可选：TLS 私钥路径
 
+	// GitHub 仓库（owner/repo），用于 /cli 下载页查询最新 release
+	GitHubRepo string
+	// GitHub Token（可选）：提升 /cli/releases/latest 代理的 API 配额
+	GitHubToken string
+
 	// 限速：单位 bytes/sec，0 = 不限速
 	//
 	// 语义：每个 upload / download 连接 *独立* 申请一个新的 token bucket，

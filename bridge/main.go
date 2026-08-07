@@ -31,6 +31,8 @@ func main() {
 	defaultDownloadBPS := getEnvInt64("FFB_DOWNLOAD_BPS", 0)
 	defaultMaxParallel := getEnvInt("FFB_MAX_PARALLEL_UPLOADS", 10)
 	defaultTempDir := os.Getenv("FFB_TEMP_DIR")
+	defaultGitHubRepo := os.Getenv("FFB_GITHUB_REPO")
+	defaultGitHubToken := os.Getenv("FFB_GITHUB_TOKEN")
 
 	httpPort := flag.Int("http-port", defaultHTTPPort, "HTTP 服务器端口")
 	tcpPort := flag.Int("tcp-port", defaultTCPPort, "TCP 流服务器端口")
@@ -45,6 +47,8 @@ func main() {
 	downloadBPS := flag.Int64("download-bps", defaultDownloadBPS, "下行 per-connection 限速 bytes/sec，0=不限速")
 	maxParallel := flag.Int("max-parallel-uploads", defaultMaxParallel, "并行上传数上限（共享 TCP/WS/multipart/chunk）；0/负数=不限")
 	tempDir := flag.String("temp-dir", defaultTempDir, "resumable 模式的临时文件目录（默认 OSTempDir/fileflow-bridge）")
+	githubRepo := flag.String("github-repo", defaultGitHubRepo, "GitHub 仓库 (owner/repo)，用于 /cli 下载页查询最新 release；默认 SuPerCxyz/fileflowbridge")
+	githubToken := flag.String("github-token", defaultGitHubToken, "可选：GitHub Token，提升 /cli 代理的 API 配额")
 
 	flag.Parse()
 
@@ -84,6 +88,8 @@ func main() {
 	server.MaxParallelUploads = *maxParallel
 	server.initUploadSem()
 	server.TempDir = strings.TrimSpace(*tempDir)
+	server.GitHubRepo = strings.TrimSpace(*githubRepo)
+	server.GitHubToken = strings.TrimSpace(*githubToken)
 	if server.APIKey != "" {
 		log.Printf("🔐 已启用 API Key 鉴权（X-API-Key 头）")
 	}

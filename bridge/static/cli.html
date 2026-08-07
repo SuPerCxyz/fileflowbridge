@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>下载命令行工具 - FileFlow Bridge</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --surface: #ffffff;
+      --surface-2: #f7fafc;
+      --text: #1a202c;
+      --text-secondary: #4a5568;
+      --text-tertiary: #718096;
+      --border: #e2e8f0;
+      --border-strong: #cbd5e0;
+      --accent: #5a67d8;
+      --accent-2: #805ad5;
+      --accent-gradient: linear-gradient(135deg, #5a67d8 0%, #805ad5 100%);
+      --success: #38a169;
+      --success-bg: #c6f6d5;
+      --error: #e53e3e;
+      --error-bg: #fed7d7;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.06);
+      --radius: 12px;
+      --code-bg: #1e2430;
+      --code-text: #e2e8f0;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --surface: #161b22;
+        --surface-2: #1c2128;
+        --text: #e2e8f0;
+        --text-secondary: #a0aec0;
+        --text-tertiary: #718096;
+        --border: #30363d;
+        --border-strong: #484f58;
+        --accent: #7c86e7;
+        --accent-2: #9f7aea;
+        --accent-gradient: linear-gradient(135deg, #7c86e7 0%, #9f7aea 100%);
+        --success: #48bb78;
+        --success-bg: rgba(72, 187, 120, 0.15);
+        --error: #fc8181;
+        --error-bg: rgba(252, 129, 129, 0.15);
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);
+        --code-bg: #0d1117;
+        --code-text: #e2e8f0;
+      }
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .app {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 32px 24px 64px;
+    }
+
+    header { margin-bottom: 24px; }
+
+    .header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      color: var(--text-tertiary);
+      font-size: 0.95rem;
+      margin-top: 4px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+      min-height: 36px;
+    }
+
+    .btn-primary {
+      background: var(--accent-gradient);
+      color: #fff;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(90, 103, 216, 0.25);
+    }
+
+    .btn-secondary {
+      background: var(--surface-2);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-strong);
+    }
+
+    .btn-secondary:hover:not(:disabled) { background: var(--border); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-card);
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .recommend {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), var(--shadow-card);
+    }
+
+    .card-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-meta {
+      font-size: 0.85rem;
+      color: var(--text-tertiary);
+      margin-bottom: 12px;
+    }
+
+    .platform-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .platform-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    @media (max-width: 600px) {
+      .platform-grid { grid-template-columns: 1fr; }
+      .app { padding: 20px 16px 48px; }
+      h1 { font-size: 1.5rem; }
+    }
+
+    .platform-btn {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 12px 14px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+
+    .platform-btn:hover {
+      border-color: var(--accent);
+      background: var(--surface);
+    }
+
+    .platform-btn .size {
+      font-size: 0.8rem;
+      color: var(--text-tertiary);
+      font-weight: 400;
+    }
+
+    .status-msg {
+      font-size: 0.9rem;
+      padding: 10px 12px;
+      border-radius: 8px;
+      display: none;
+    }
+
+    .status-msg.show { display: block; }
+    .status-msg.error { color: var(--error); background: var(--error-bg); }
+    .status-msg.info { color: var(--text-secondary); background: var(--surface-2); }
+
+    .usage {
+      margin-top: 8px;
+    }
+
+    .usage h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 10px;
+      color: var(--text-secondary);
+    }
+
+    .code-block {
+      background: var(--code-bg);
+      color: var(--code-text);
+      padding: 14px 16px;
+      border-radius: 8px;
+      font-family: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.85rem;
+      overflow-x: auto;
+      white-space: pre;
+      line-height: 1.6;
+    }
+
+    .code-block .cmt { color: #7a8896; }
+    .code-block .var { color: #7ee787; }
+
+    .copy-btn {
+      float: right;
+      padding: 4px 10px;
+      font-size: 0.8rem;
+      min-height: 28px;
+      margin-bottom: 8px;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border-strong);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="header-row">
+        <div>
+          <h1>📥 命令行工具</h1>
+          <p class="subtitle">fileflowprovider - 终端上传文件到 FileFlow Bridge</p>
+        </div>
+        <a href="/" class="btn btn-secondary">← 返回上传</a>
+      </div>
+    </header>
+
+    <div id="statusMsg" class="status-msg"></div>
+
+    <div id="recommendCard" class="card recommend hidden">
+      <div class="card-title">
+        <span id="recommendTitle">推荐下载</span>
+        <span id="recommendBadge" class="platform-badge"></span>
+      </div>
+      <div class="card-meta" id="recommendMeta"></div>
+      <a id="recommendBtn" class="btn btn-primary" href="#" download>
+        ⬇ 下载 fileflowprovider
+      </a>
+    </div>
+
+    <div class="card">
+      <div class="card-title">所有平台</div>
+      <div class="card-meta" id="releaseMeta">加载中...</div>
+      <div id="platformGrid" class="platform-grid">
+        <span class="spinner"></span>
+      </div>
+    </div>
+
+    <div class="card usage">
+      <h3>使用方法</h3>
+      <div style="overflow: auto;">
+        <button id="copyUsage" class="btn btn-secondary copy-btn">复制</button>
+        <div id="usageCode" class="code-block"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      const statusMsg = document.getElementById('statusMsg');
+      const recommendCard = document.getElementById('recommendCard');
+      const recommendTitle = document.getElementById('recommendTitle');
+      const recommendBadge = document.getElementById('recommendBadge');
+      const recommendMeta = document.getElementById('recommendMeta');
+      const recommendBtn = document.getElementById('recommendBtn');
+      const releaseMeta = document.getElementById('releaseMeta');
+      const platformGrid = document.getElementById('platformGrid');
+      const usageCode = document.getElementById('usageCode');
+      const copyUsage = document.getElementById('copyUsage');
+
+      function showMsg(text, type) {
+        statusMsg.textContent = text;
+        statusMsg.className = 'status-msg show ' + (type || 'info');
+      }
+
+      function clearMsg() {
+        statusMsg.className = 'status-msg';
+        statusMsg.textContent = '';
+      }
+
+      function fmtBytes(bytes) {
+        if (!bytes) return '';
+        const units = ['B', 'KiB', 'MiB', 'GiB'];
+        const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+        return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 2 : 0) + ' ' + units[i];
+      }
+
+      // 从 UA 检测当前平台
+      function detectPlatform() {
+        const ua = navigator.userAgent.toLowerCase();
+        const arch = (navigator.userAgentData && navigator.userAgentData.platform || '').toLowerCase();
+        let os = 'linux';
+        if (ua.indexOf('win') !== -1) os = 'windows';
+        else if (ua.indexOf('mac') !== -1) os = 'darwin';
+        else if (ua.indexOf('linux') !== -1 || ua.indexOf('x11') !== -1) os = 'linux';
+
+        let cpu = 'amd64';
+        if (ua.indexOf('arm64') !== -1 || ua.indexOf('aarch64') !== -1 ||
+            arch.indexOf('arm64') !== -1 || arch.indexOf('aarch64') !== -1) {
+          cpu = 'arm64';
+        }
+        return { os: os, arch: cpu };
+      }
+
+      const platformLabels = {
+        'linux-amd64': 'Linux x86_64',
+        'linux-arm64': 'Linux ARM64',
+        'darwin-amd64': 'macOS Intel',
+        'darwin-arm64': 'macOS Apple Silicon',
+        'windows-amd64': 'Windows x86_64',
+        'windows-arm64': 'Windows ARM64',
+      };
+
+      function matchAsset(assets, os, arch) {
+        const key = os + '-' + arch;
+        const target = 'fileflowprovider-' + key;
+        for (const a of assets) {
+          if (a.name.indexOf(target) !== -1) return a;
+        }
+        return null;
+      }
+
+      function buildUsage(serverBase) {
+        const cur = detectPlatform();
+        const isWin = cur.os === 'windows';
+        const binName = isWin ? 'fileflowprovider.exe' : 'fileflowprovider';
+        const url = serverBase || 'https://ffb.soocoo.xyz';
+        const lines = [
+          '<span class="cmt"># 1. 下载后赋予执行权限（Linux / macOS）</span>',
+          '<span class="var">$</span> chmod +x ' + binName,
+          '',
+          '<span class="cmt"># 2. 上传文件</span>',
+          '<span class="var">$</span> ./' + binName + ' ' + url + ' ./你的文件.zip',
+          '',
+          '<span class="cmt"># 3. 终端会输出下载链接，发送给接收者即可</span>',
+        ];
+        return lines.join('\n');
+      }
+
+      async function load() {
+        try {
+          const resp = await fetch('/cli/releases/latest', { cache: 'no-store' });
+          if (!resp.ok) {
+            showMsg('无法获取 Release 信息 (HTTP ' + resp.status + ')', 'error');
+            platformGrid.innerHTML = '<span style="color: var(--text-tertiary); font-size: 0.85rem;">暂无可用版本</span>';
+            return;
+          }
+          const data = await resp.json();
+          clearMsg();
+
+          const tag = data.tag_name || data.name || 'latest';
+          const date = data.published_at ? new Date(data.published_at).toLocaleDateString('zh-CN') : '';
+          releaseMeta.textContent = '版本 ' + tag + (date ? ' · 发布于 ' + date : '') + ' · 共 ' + (data.assets ? data.assets.length : 0) + ' 个文件';
+
+          const assets = (data.assets || []).filter(function (a) {
+            return a.name.indexOf('fileflowprovider') !== -1;
+          });
+
+          if (!assets.length) {
+            platformGrid.innerHTML = '<span style="color: var(--text-tertiary); font-size: 0.85rem;">此版本未包含 fileflowprovider 资产</span>';
+            return;
+          }
+
+          const cur = detectPlatform();
+          const recommended = matchAsset(assets, cur.os, cur.arch);
+
+          if (recommended) {
+            const key = cur.os + '-' + cur.arch;
+            recommendBadge.textContent = platformLabels[key] || key;
+            recommendMeta.textContent = fmtBytes(recommended.size);
+            recommendBtn.href = recommended.browser_download_url;
+            recommendBtn.download = '';
+            recommendCard.classList.remove('hidden');
+          }
+
+          platformGrid.innerHTML = '';
+          const keys = Object.keys(platformLabels);
+          for (const key of keys) {
+            const parts = key.split('-');
+            const os = parts[0];
+            const arch = parts[1];
+            const a = matchAsset(assets, os, arch);
+            if (!a) continue;
+            const btn = document.createElement('a');
+            btn.className = 'platform-btn';
+            btn.href = a.browser_download_url;
+            btn.download = '';
+            btn.innerHTML = '<span>' + (platformLabels[key] || key) + '</span>' +
+              '<span class="size">' + fmtBytes(a.size) + '</span>';
+            platformGrid.appendChild(btn);
+          }
+
+          const serverBase = window.location.origin;
+          usageCode.innerHTML = buildUsage(serverBase);
+        } catch (err) {
+          showMsg('加载失败: ' + (err.message || err), 'error');
+        }
+      }
+
+      copyUsage.addEventListener('click', function () {
+        const text = usageCode.textContent;
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(text).then(function () {
+            copyUsage.textContent = '已复制';
+            setTimeout(function () { copyUsage.textContent = '复制'; }, 1500);
+          });
+        }
+      });
+
+      load();
+    })();
+  </script>
+</body>
+</html>

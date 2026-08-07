@@ -111,6 +111,10 @@ func (ffb *FileFlowBridge) buildRouter() http.Handler {
 	router.Get("/metrics", ffb.handleMetrics)
 	router.Get("/config", ffb.handleClientConfig)
 
+	// CLI 下载页：fileflowprovider 多平台二进制
+	router.Get("/cli", ffb.handleCLIPage)
+	router.Get("/cli/releases/latest", ffb.handleCLILatestRelease)
+
 	// 静态文件：仅在 ./static 目录存在时启用
 	staticDir := "./static"
 	if _, err := os.Stat(staticDir); err == nil {
