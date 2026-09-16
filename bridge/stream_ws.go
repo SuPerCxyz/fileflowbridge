@@ -83,6 +83,7 @@ func (ffb *FileFlowBridge) handleWebSocketConnection(w http.ResponseWriter, r *h
 		return
 	}
 
+	ffb.metrics.incUpload()
 	logInfo("🔗 WebSocket连接已建立: %s", authToken)
 
 	wsStreamConn := &WebSocketStreamConnection{
@@ -189,6 +190,8 @@ func (ffb *FileFlowBridge) handleWebSocketConnection(w http.ResponseWriter, r *h
 					logInfo("⚠️ 下载已完成，忽略上传数据: %s", authToken)
 					continue
 				}
+
+				ffb.metrics.addUploadBytes(int64(len(message)))
 
 				data := make([]byte, len(message))
 				copy(data, message)

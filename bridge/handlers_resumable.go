@@ -19,8 +19,11 @@ import (
 // 状态机说明：状态转换由外层 handleDownloadRequest 统一负责，本函数仅做：
 //   1) 上传完成性校验
 //   2) 文件 IO + ServeContent
-//   3) 完成时校验 SHA256 + 更新统计
+//   3) 完整下发后校验 SHA256 + 更新统计 + 回收资源
 // 不再独立设置 Status，避免与未来多下载端语义冲突。
+//
+// 资源回收语义：只有「非 HEAD、无 Range、且写出的字节数达到文件大小」才视为
+// 消耗掉这次 single-shot 下载；探测类（HEAD / 304 / 416）与分段请求保留资源。
 
 func (ffb *FileFlowBridge) serveResumableDownload(
 	w http.ResponseWriter, r *http.Request, authToken string, metadata *FileMetadata,
@@ -33,9 +36,14 @@ func (ffb *FileFlowBridge) serveResumableDownload(
 		return
 	}
 
+	// resumable 模式同样是 single-shot，但只有「完整下发整个文件」才消耗 token。
+	// HEAD / Range / If-Modified-Since(304) / 416 等探测或分段请求不清理资源，
+	// 否则浏览器预检、下载管理器多线程取块都会把暂存文件删掉导致链接永久失效。
+	var transferCompleted bool
 	defer func() {
-		// resumable 模式同样是 single-shot：下载完成（或失败）后清理
-		ffb.removeFileResources(authToken)
+		if transferCompleted {
+			ffb.removeFileResources(authToken)
+		}
 	}()
 
 	// 打开临时文件
@@ -65,12 +73,13 @@ func (ffb *FileFlowBridge) serveResumableDownload(
 	rw := newCountingResponseWriter(w, ffb.DownloadBytesPerSec, ffb.metrics.addDownloadBytes)
 	http.ServeContent(rw, r, metadata.OriginalFilename, metadata.UploadReadyAt, f)
 
-	// 仅在完整发完整文件大小时才做 SHA256 校验：
+	// 仅在完整发完整文件大小时才算完成：
 	// - Range 请求只发了部分文件
 	// - HEAD 请求不传输 body
+	// - 客户端中途断开时写入字节数不足
 	rangeReq := r.Header.Get("Range") != ""
 	isHead := r.Method == http.MethodHead
-	transferCompleted := !rangeReq && !isHead && rw.written >= metadata.Size
+	transferCompleted = !rangeReq && !isHead && rw.written >= metadata.Size
 
 	if transferCompleted && metadata.ExpectedSHA256 != "" {
 		// 重新读临时文件做 hash；resumable 落盘比 stream 模式宽裕，可以离线校验

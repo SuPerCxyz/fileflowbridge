@@ -68,6 +68,9 @@ func (ffb *FileFlowBridge) pumpDownload(
 					if hasher != nil {
 						hasher.Write(buf[:n])
 					}
+					if conn != nil {
+						ffb.metrics.addUploadBytes(int64(n))
+					}
 					if _, werr := w.Write(buf[:n]); werr != nil {
 						logWarn("❌ 客户端写入失败: %v", werr)
 					}
@@ -93,6 +96,12 @@ func (ffb *FileFlowBridge) pumpDownload(
 
 		if hasher != nil {
 			hasher.Write(buf[:n])
+		}
+
+		// TCP provider 的字节由本循环直接从 socket 读出，在这里统计上行量；
+		// WS / multipart 路径各自在自己的接收点统计，conn 为 nil 不会重复计数。
+		if conn != nil {
+			ffb.metrics.addUploadBytes(int64(n))
 		}
 
 		if _, err := w.Write(buf[:n]); err != nil {

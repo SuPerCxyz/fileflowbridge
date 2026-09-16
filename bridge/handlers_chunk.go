@@ -47,6 +47,10 @@ func (ffb *FileFlowBridge) handleFileUploadChunk(w http.ResponseWriter, r *http.
 		http.Error(w, "该 token 未启用 resumable 上传，请使用 POST /upload/{token}", http.StatusBadRequest)
 		return
 	}
+	if !metadata.ExpiresAt.IsZero() && metadata.ExpiresAt.Before(time.Now()) {
+		http.Error(w, "token 已过期", http.StatusGone)
+		return
+	}
 	if metadata.uploadReady.Load() {
 		// 已经全部接收，幂等返回 200
 		writeChunkStatus(w, metadata, http.StatusOK)
@@ -164,6 +168,10 @@ func (ffb *FileFlowBridge) handleUploadStatus(w http.ResponseWriter, r *http.Req
 	}
 	if !metadata.Resumable {
 		http.Error(w, "该 token 未启用 resumable 上传", http.StatusBadRequest)
+		return
+	}
+	if !metadata.ExpiresAt.IsZero() && metadata.ExpiresAt.Before(time.Now()) {
+		http.Error(w, "token 已过期", http.StatusGone)
 		return
 	}
 

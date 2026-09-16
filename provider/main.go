@@ -287,8 +287,43 @@ func (f *FlowProvider) EstablishStreamConnection() error {
 		return err
 	}
 
+	// 连接 EOF 只在「会话结束」时出现，下载端中途断开同样会导致 EOF，
+	// 因此必须再向 bridge 确认 download_completed，避免把中断报成成功。
+	completed, err := f.DownloadCompleted()
+	if err != nil {
+		return fmt.Errorf("无法确认下载是否完成: %v", err)
+	}
+	if !completed {
+		return fmt.Errorf("下载端未完整接收文件（连接已结束，服务端未标记下载完成）")
+	}
+
 	fmt.Println("🎉 文件传输完成!")
 	return nil
+}
+
+// DownloadCompleted 查询 bridge 是否已把该 token 标记为「下载完成」。
+func (f *FlowProvider) DownloadCompleted() (bool, error) {
+	if f.AuthToken == "" {
+		return false, errors.New("文件未注册")
+	}
+	url := fmt.Sprintf("%s/status/%s", f.BridgeURL, f.AuthToken)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return false, fmt.Errorf("status=%d body=%s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		DownloadCompleted bool `json:"download_completed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return false, err
+	}
+	return out.DownloadCompleted, nil
 }
 
 // FormatSpeed 格式化速度输出
@@ -502,13 +537,24 @@ func (p *ProgressBar) Finish() {
 		return
 	}
 
-	// 获取当前大小（完成时 Current == Total）和单位（与 Total 单位一致）
+	// 结束时不代表一定传完：中断 / 失败时也应打印真实进度，
+	// 否则日志里会留下「100.0% 却后续报错」的误导信息。
+	percent := float64(p.Current) / float64(p.Total) * 100
+	if percent > 100 {
+		percent = 100
+	}
+	filled := int(percent / 2)
+	if filled > 50 {
+		filled = 50
+	}
+
 	currentSize, currentUnit := p.getHumanSize(p.Current)
 	totalSize, totalUnit := p.getHumanSize(p.Total)
 
-	fmt.Printf("\r%s [%-50s] 100.0%% (%.2f %s / %.2f %s)\n",
+	fmt.Printf("\r%s [%-50s] %.1f%% (%.2f %s / %.2f %s)\n",
 		p.Desc,
-		strings.Repeat("=", 50),
+		strings.Repeat("=", filled),
+		percent,
 		currentSize,
 		currentUnit,
 		totalSize,
@@ -680,7 +726,7 @@ func main() {
 		if err := provider.EstablishStreamConnection(); err != nil {
 			uploadErr = err
 			fmt.Println("❌ 传输失败:", err)
-			revokeNow("上传异常")
+			revokeNow("传输异常")
 			os.Exit(1)
 		}
 	}

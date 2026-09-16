@@ -55,6 +55,12 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 		ffb.metrics.incDownloadError()
 		return
 	}
+	if !metadata.ExpiresAt.IsZero() && metadata.ExpiresAt.Before(time.Now()) {
+		// 到期即拒绝，不等 cleanupExpiredFiles（5 分钟一轮）来兜底
+		http.Error(w, "下载链接已过期", http.StatusGone)
+		ffb.metrics.incDownloadError()
+		return
+	}
 
 	// 浏览器返回下载中间页
 	if isBrowserRequest(r) {
@@ -158,7 +164,24 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 		return
 	}
 
-	defer ffb.removeFileResources(authToken)
+	// 选择 reader / conn
+	var reader io.Reader
+	var conn net.Conn
+	wsStream, isWS := streamConn.(*WebSocketStreamConnection)
+
+	// 资源回收语义：single-shot 只在「完整下发整个文件」后被消耗。
+	//   - WS 流可重发：中断（客户端断开/读超时）时保留 token，下载端可重试
+	//   - TCP 流不可回卷：一旦读过一部分就无法从头重放，中断后必须回收
+	// 统一收尾：无论正常返回还是 panic 截断，都走同一套资源处置逻辑
+	completedNormally := false
+	defer func() {
+		if completedNormally || !isWS {
+			ffb.removeFileResources(authToken)
+			return
+		}
+		// WS 且未完整下发：保留 token，丢弃残留并回滚状态，供下载端重试
+		ffb.markDownloadInterrupted(authToken, previousStatus, wsStream)
+	}()
 
 	// 响应头
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -177,11 +200,6 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 
 	startTime := time.Now()
 
-	// 选择 reader / conn
-	var reader io.Reader
-	var conn net.Conn
-	wsStream, isWS := streamConn.(*WebSocketStreamConnection)
-
 	if tcpConn, ok := streamConn.(*StreamConnection); ok {
 		reader = tcpConn.Reader
 		conn = tcpConn.Conn
@@ -190,6 +208,26 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 		}
 	} else if isWS {
 		reader = wsStream
+
+		// 上一次下载被中断过：先让 provider 作废其发送循环并清掉残留缓冲，
+		// 否则这次会从上次断点继续吐数据，客户端拿到的是错位的字节流。
+		ffb.mu.RLock()
+		needReset := metadata.DownloadInterrupted
+		ffb.mu.RUnlock()
+		if needReset {
+			if !wsStream.resetForNewDownload() {
+				logWarn("⚠️ 无法确认上传端已停止旧循环，拒绝本次下载: %s", authToken)
+				http.Error(w, "上一次传输中断且上传端未能复位，请重新发起传输", http.StatusServiceUnavailable)
+				ffb.metrics.incDownloadError()
+				return
+			}
+			ffb.mu.Lock()
+			if meta, ok := ffb.fileRegistry[authToken]; ok {
+				meta.DownloadInterrupted = false
+			}
+			ffb.mu.Unlock()
+		}
+
 		_ = wsStream.writeJSON(map[string]interface{}{
 			"command": "download_started",
 			"offset":  0,
@@ -200,11 +238,6 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 			"offset":  0,
 			"size":    metadata.Size,
 		}); err != nil {
-			ffb.mu.Lock()
-			if meta, ok := ffb.fileRegistry[authToken]; ok && !ffb.downloadCompleted[authToken] && meta.Status == "downloading" {
-				meta.Status = previousStatus
-			}
-			ffb.mu.Unlock()
 			logWarn("发送数据请求失败: %v", err)
 			http.Error(w, "无法从上传端请求数据", http.StatusInternalServerError)
 			ffb.metrics.incDownloadError()
@@ -246,4 +279,31 @@ func (ffb *FileFlowBridge) handleDownloadRequest(w http.ResponseWriter, r *http.
 	}
 
 	ffb.finalizeDownload(authToken, metadata, totalTransferred, transferCompleted, time.Since(startTime), wsStream)
+	completedNormally = transferCompleted
+
+	if !transferCompleted {
+		// 具体处置（丢弃残留 / 回滚状态 / 回收资源）在 defer 中统一完成
+		logWarn("⚠️ 下载未完成: %s (token_id: %s), 已传输 %d / %d",
+			metadata.OriginalFilename, authToken, totalTransferred, metadata.Size)
+	}
+}
+
+// markDownloadInterrupted 下载中断后的收尾（仅用于可重发的 WebSocket 流）：
+//  1. 立刻丢弃残留数据——否则 WS 读协程写满 DataChan 后会超时退出并关闭连接，
+//     token 会被 handleWebSocketConnection 的清理逻辑一并删掉，重试无从谈起；
+//  2. 把状态从 downloading 回滚，否则后续重试会被 409「文件正在下载中」挡住；
+//  3. 标记待复位，下次下载前再清一次，确保从 offset 0 的干净数据开始。
+func (ffb *FileFlowBridge) markDownloadInterrupted(authToken, previousStatus string, wsStream *WebSocketStreamConnection) {
+	if wsStream != nil {
+		wsStream.drainDataQuiet(wsResetQuiet, wsResetBudget)
+	}
+
+	ffb.mu.Lock()
+	defer ffb.mu.Unlock()
+	meta, ok := ffb.fileRegistry[authToken]
+	if !ok || ffb.downloadCompleted[authToken] || meta.Status != "downloading" {
+		return
+	}
+	meta.Status = previousStatus
+	meta.DownloadInterrupted = true
 }

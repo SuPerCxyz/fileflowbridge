@@ -24,10 +24,15 @@ type chunkStatusResp struct {
 	Size          int64 `json:"size"`
 	ReceivedBytes int64 `json:"received_bytes"`
 	MissingChunks []int `json:"missing_chunks"`
+	MissingCount  int   `json:"missing_count"`
 	UploadReady   bool  `json:"upload_ready"`
 }
 
-// UploadChunked 通过 PUT chunk 上传整个文件
+// maxUploadRounds 服务端 missing_chunks 列表有上限（10000 项），
+// 小 chunk 的大文件需要多轮补齐；这里给出一个防御性上限避免死循环。
+const maxUploadRounds = 1000
+
+// UploadChunked 通过 PUT chunk 上传整个文件（支持断点续传与多轮补齐）
 func (f *FlowProvider) UploadChunked() error {
 	if !f.Resumable || f.chunkUploadURL == "" {
 		return fmt.Errorf("provider 未启用 resumable 或服务器未返回 chunk 上传地址")
@@ -39,22 +44,37 @@ func (f *FlowProvider) UploadChunked() error {
 		f.MaxRetries = 5
 	}
 
-	// 查询当前已收到的 chunk
-	missing, err := f.queryChunkStatus()
-	if err != nil {
-		return fmt.Errorf("查询 chunk 状态失败: %w", err)
-	}
-	if len(missing) == 0 {
-		fmt.Println("✅ 所有 chunk 已在服务器，无需重发")
-		return nil
-	}
-
-	fmt.Printf("🚀 开始上传 %d 个 chunk（并发 %d，重试 %d）\n",
-		len(missing), f.UploadConc, f.MaxRetries)
-
 	// 共享 HTTP client，复用 TCP 连接
 	uploadClient := &http.Client{Timeout: 5 * time.Minute}
+	startTime := time.Now()
 
+	for round := 1; round <= maxUploadRounds; round++ {
+		resp, err := f.queryChunkStatusFull()
+		if err != nil {
+			return fmt.Errorf("查询 chunk 状态失败: %w", err)
+		}
+		if resp.UploadReady {
+			if round == 1 {
+				fmt.Println("✅ 所有 chunk 已在服务器，无需重发")
+			}
+			fmt.Println("🎉 Resumable 上传完成")
+			return nil
+		}
+		if len(resp.MissingChunks) == 0 {
+			return fmt.Errorf("服务器报告仍有 %d 个 chunk 缺失，但未返回待传列表", resp.MissingCount)
+		}
+
+		fmt.Printf("🚀 第 %d 轮：上传 %d 个 chunk（并发 %d，重试 %d）\n",
+			round, len(resp.MissingChunks), f.UploadConc, f.MaxRetries)
+		if err := f.uploadChunks(resp.MissingChunks, uploadClient, startTime); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("上传轮次超过 %d 轮仍未完成", maxUploadRounds)
+}
+
+// uploadChunks 并发上传指定的 chunk 列表；任一 chunk 连续失败即整体失败。
+func (f *FlowProvider) uploadChunks(missing []int, uploadClient *http.Client, startTime time.Time) error {
 	jobs := make(chan int, len(missing))
 	for _, idx := range missing {
 		jobs <- idx
@@ -83,7 +103,6 @@ func (f *FlowProvider) UploadChunked() error {
 	}
 
 	totalBytes := f.FileInfo.Size
-	startTime := time.Now()
 
 	for i := 0; i < f.UploadConc; i++ {
 		wg.Add(1)
@@ -116,28 +135,7 @@ func (f *FlowProvider) UploadChunked() error {
 	wg.Wait()
 	fmt.Println()
 
-	if firstErr != nil {
-		return firstErr
-	}
-
-	// 最后再调一次 status 确认 upload_ready=true
-	resp, err := f.queryChunkStatusFull()
-	if err != nil {
-		return fmt.Errorf("最终状态校验失败: %w", err)
-	}
-	if !resp.UploadReady {
-		return fmt.Errorf("服务器未确认上传完成；missing=%v", resp.MissingChunks)
-	}
-	fmt.Println("🎉 Resumable 上传完成")
-	return nil
-}
-
-func (f *FlowProvider) queryChunkStatus() ([]int, error) {
-	resp, err := f.queryChunkStatusFull()
-	if err != nil {
-		return nil, err
-	}
-	return resp.MissingChunks, nil
+	return firstErr
 }
 
 func (f *FlowProvider) queryChunkStatusFull() (*chunkStatusResp, error) {
@@ -181,6 +179,9 @@ func (f *FlowProvider) uploadOneChunk(index int, client *http.Client) (int64, er
 			return n, nil
 		}
 		lastErr = err
+		if attempt == f.MaxRetries {
+			break
+		}
 		// 指数退避，最长 8 秒
 		backoff := time.Duration(1<<attempt) * 200 * time.Millisecond
 		if backoff > 8*time.Second {

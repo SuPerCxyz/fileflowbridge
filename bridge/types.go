@@ -19,6 +19,14 @@ const (
 	completedDownloadTTL     = 1 * time.Minute
 )
 
+// 中断重试前的残留清理窗口：
+//   - wsResetQuiet：连续这段时间没有新数据，才认为 provider 已停止发送旧数据
+//   - wsResetBudget：总预算，超时则放弃本次下载（宁可报错也不拼出错位数据）
+const (
+	wsResetQuiet  = 300 * time.Millisecond
+	wsResetBudget = 3 * time.Second
+)
+
 // ==================== 元数据 / 统计 ====================
 
 // FileMetadata 文件元数据结构
@@ -55,6 +63,11 @@ type FileMetadata struct {
 	TempPath      string    `json:"-"` // 临时文件路径，不外暴露
 	ReceivedBytes int64     `json:"received_bytes,omitempty"`
 	UploadReadyAt time.Time `json:"upload_ready_at,omitempty"`
+
+	// DownloadInterrupted 表示上一次下载在传完之前中断（客户端断开 / 读超时）。
+	// 仅对可重发的 WebSocket 流有意义：下次下载前必须让 provider 复位并清空残留缓冲。
+	// 受 ffb.mu 保护。
+	DownloadInterrupted bool `json:"-"`
 
 	// lastChunkAt 记录最后一次收到 chunk 的时间。
 	// 用于 cleanupExpiredFiles 判断 resumable 上传是否已停滞：
@@ -223,6 +236,51 @@ func (wsConn *WebSocketStreamConnection) writeMessage(messageType int, data []by
 	// 防止对端卡住时 WriteMessage 无限阻塞
 	_ = wsConn.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return wsConn.Conn.WriteMessage(messageType, data)
+}
+
+// resetForNewDownload 让 provider 作废上一次的发送循环并丢弃残留数据，
+// 使本次下载能从 offset 0 的干净字节流重新开始（用于中断后的重试）。
+//
+// 返回 false 表示在预算内仍无法确认数据通道已静默——此时宁可拒绝本次下载，
+// 也不能把「上次断点之后的数据」当成文件开头发出去。
+func (wsConn *WebSocketStreamConnection) resetForNewDownload() bool {
+	// WebSocket 文本/二进制消息有序：先发 stop_upload，随后发的 send_chunk 一定后到，
+	// provider 因此必然先作废旧循环再启动新循环。
+	if err := wsConn.writeJSON(map[string]interface{}{"command": "stop_upload"}); err != nil {
+		return false
+	}
+	return wsConn.drainDataQuiet(wsResetQuiet, wsResetBudget)
+}
+
+// drainDataQuiet 丢弃已缓冲 / 仍在途的数据，直到连续 quiet 时间内没有新数据到达。
+// 返回 false 表示到 budget 为止数据仍在流动（无法确认已静默）。
+//
+// 两个用途：
+//  1. 下载中断后立即丢弃残留，避免 WS 读协程因 DataChan 写满而超时退出
+//     （读协程一退出就会关闭 WebSocket，token 会被连带清理，重试就没了）
+//  2. 重试前复位，保证新一次下载从 offset 0 的干净数据开始
+//
+// 调用方必须保证此刻没有其他 goroutine 在消费 DataChan。
+func (wsConn *WebSocketStreamConnection) drainDataQuiet(quiet, budget time.Duration) bool {
+	// 消费方此刻尚未开始读，Buffer/Index 无人并发访问。
+	wsConn.Buffer = nil
+	wsConn.Index = 0
+
+	deadline := time.Now().Add(budget)
+	quietSince := time.Now()
+	for time.Now().Before(deadline) {
+		select {
+		case <-wsConn.DataChan:
+			quietSince = time.Now()
+			continue
+		default:
+		}
+		if time.Since(quietSince) >= quiet {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 // Read 实现 io.Reader：从 DataChan 读取数据，CloseChan 关闭时返回 EOF

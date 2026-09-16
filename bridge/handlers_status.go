@@ -20,6 +20,16 @@ func (ffb *FileFlowBridge) handleStatusCheck(w http.ResponseWriter, r *http.Requ
 	completed := ffb.downloadCompleted[authToken]
 	if !exists {
 		ffb.mu.RUnlock()
+		if completed {
+			// registry 项在下载完成后即被回收，但完成标记会保留一小段时间。
+			// 这里如实回答「已完成」，否则客户端无法区分「下载成功」和「token 失效」。
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status":             "completed",
+				"download_completed": true,
+			})
+			return
+		}
 		http.Error(w, "文件未找到", http.StatusNotFound)
 		return
 	}

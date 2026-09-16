@@ -37,13 +37,19 @@ func (ffb *FileFlowBridge) finalizeDownload(
 	// 2) 锁内更新状态
 	ffb.mu.Lock()
 	if _, ok := ffb.fileRegistry[authToken]; ok && transferCompleted {
-		ffb.serverStats.FilesTransferred++
-		ffb.metrics.incDownloadComplete()
 		ffb.downloadCompleted[authToken] = true
 		ffb.downloadCompletedAt[authToken] = time.Now()
 		ffb.closeDoneChLocked(authToken)
 	}
+	if transferCompleted {
+		// 统计不依赖 registry 项是否还在：并发 cleanup 可能已把 token 删掉，
+		// 但这次传输确实完整送达了下载端。
+		ffb.serverStats.FilesTransferred++
+	}
 	ffb.mu.Unlock()
+	if transferCompleted {
+		ffb.metrics.incDownloadComplete()
+	}
 
 	if transferCompleted && transferTime > 0 {
 		sizeMiB := float64(totalTransferred) / (1024 * 1024)

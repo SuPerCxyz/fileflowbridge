@@ -495,6 +495,10 @@
       color: var(--error);
     }
 
+    .task-note {
+      color: var(--text-tertiary);
+    }
+
     .task-link {
       display: flex;
       align-items: center;
@@ -640,7 +644,7 @@
       <input type="file" id="fileInput" multiple hidden>
       <div class="drop-icon" aria-hidden="true">📁</div>
       <div class="drop-main">拖拽文件到这里或点击选择文件</div>
-      <div class="drop-sub">支持任意类型文件，无大小限制</div>
+      <div class="drop-sub">支持任意类型文件，边传边下</div>
       <div id="dropHint" class="drop-hint"></div>
     </div>
 
@@ -658,13 +662,6 @@
 
       const WS_CHUNK_SIZE = 64 * 1024;
       const WS_BACKPRESSURE = 4 * 1024 * 1024;
-      const CHUNK_CONCURRENCY = 4;
-      const HASH_SLICE = 8 * 1024 * 1024;
-      const HASH_MAX_SIZE = 1024 * 1024 * 1024;
-      const STATUS_POLL_INTERVAL = 1000;
-      const STATUS_POLL_MAX = 30;
-      const CHUNK_RETRY_MAX = 5;
-      const CHUNK_RETRY_DELAY = 1000;
       const API_KEY_STORAGE = 'ffb_api_key';
 
       function fmtBytes(bytes) {
@@ -694,13 +691,6 @@
         return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
       }
 
-      function hex(ab) {
-        const view = new Uint8Array(ab);
-        let out = '';
-        for (let i = 0; i < view.length; i++) out += view[i].toString(16).padStart(2, '0');
-        return out;
-      }
-
       async function readSliceAsArrayBuffer(blob) {
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -708,35 +698,6 @@
           reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
           reader.readAsArrayBuffer(blob);
         });
-      }
-
-      async function computeSha256(file, onProgress, cancelled) {
-        const total = file.size;
-        const buffers = [];
-        let offset = 0;
-        while (offset < total) {
-          if (cancelled && cancelled()) throw new CancelError();
-          const end = Math.min(offset + HASH_SLICE, total);
-          const buf = await readSliceAsArrayBuffer(file.slice(offset, end));
-          buffers.push(new Uint8Array(buf));
-          offset = end;
-          onProgress && onProgress(offset);
-          await yieldToMain();
-        }
-        let len = 0;
-        for (const u of buffers) len += u.length;
-        const combined = new Uint8Array(len);
-        let pos = 0;
-        for (const u of buffers) {
-          combined.set(u, pos);
-          pos += u.length;
-        }
-        const digest = await crypto.subtle.digest('SHA-256', combined);
-        return hex(digest);
-      }
-
-      function yieldToMain() {
-        return new Promise((resolve) => setTimeout(resolve, 0));
       }
 
       class CancelError extends Error {
@@ -763,7 +724,6 @@
           this.status = 'pending';
           this.token = null;
           this.downloadUrl = '';
-          this.sha256 = '';
           this.bytesSent = 0;
           this.bytesAcked = 0;
           this.startTime = 0;
@@ -772,8 +732,7 @@
           this.cancelled = false;
           this.ws = null;
           this.abortController = new AbortController();
-          this.resumableInfo = null;
-          this.hashSkipped = false;
+          this.sendGen = 0;
 
           this.el = document.createElement('div');
           this.el.className = 'task-card';
@@ -804,6 +763,7 @@
                 <span class="task-percent">0%</span>
                 <span class="task-speed"></span>
                 <span class="task-eta"></span>
+                <span class="task-note"></span>
               </div>
             </div>
             <div class="task-message"></div>
@@ -821,6 +781,7 @@
             percent: this.el.querySelector('.task-percent'),
             speed: this.el.querySelector('.task-speed'),
             eta: this.el.querySelector('.task-eta'),
+            note: this.el.querySelector('.task-note'),
             message: this.el.querySelector('.task-message'),
             linkRow: this.el.querySelector('.task-link'),
             linkAnchor: this.el.querySelector('.task-link a'),
@@ -835,6 +796,8 @@
           this.status = status;
           if (message) this.setMessage(message, status === 'error' ? 'error' : 'info');
           this.updateVisuals();
+          this.app.updateSummary();
+          this.app.updateStartBtn();
         }
 
         setMessage(text, type = 'info') {
@@ -858,6 +821,7 @@
           refs.state.textContent = this.stateLabel();
           refs.speed.textContent = this.speedText();
           refs.eta.textContent = this.etaText();
+          refs.note.textContent = this.noteText();
 
           const terminal = this.isTerminal();
           refs.cancelBtn.classList.toggle('hidden', terminal);
@@ -875,7 +839,6 @@
         stateLabel() {
           switch (this.status) {
             case 'pending': return '等待中';
-            case 'hashing': return '计算校验';
             case 'registering': return '注册中';
             case 'uploading': return '上传中';
             case 'completed': return '已完成';
@@ -904,8 +867,16 @@
           const elapsed = (Date.now() - this.startTime) / 1000;
           const speed = this.bytesAcked / elapsed;
           if (!speed) return '';
-          const remaining = this.file.size - bytes;
+          const remaining = this.file.size - this.bytesAcked;
           return 'ETA ' + fmtEta(remaining / speed);
+        }
+
+        // 进度语义是「下载端实收字节」，还没有下载端时进度停在 0%，
+        // 用本端已发出的字节数补充提示，避免看起来像卡死。
+        noteText() {
+          if (this.status !== 'uploading' || this.bytesAcked > 0) return '';
+          const sent = this.bytesSent > 0 ? ' · 已发送 ' + fmtBytes(this.bytesSent) : '';
+          return '等待下载端接收' + sent;
         }
 
         isTerminal() {
@@ -917,27 +888,8 @@
             if (this.cancelled) return;
             this.startTime = Date.now();
 
-            if (this.app.settings.hash) {
-              if (this.file.size > HASH_MAX_SIZE) {
-                this.hashSkipped = true;
-                this.setMessage('文件超过 1 GiB，已跳过 SHA256 计算', 'warning');
-              } else if (!window.crypto || !window.crypto.subtle) {
-                this.hashSkipped = true;
-                this.setMessage('当前环境不支持 SHA256 计算', 'warning');
-              } else {
-                this.setStatus('hashing');
-                this.sha256 = await computeSha256(
-                  this.file,
-                  (bytes) => this.updateProgress(bytes, bytes),
-                  () => this.cancelled
-                );
-                this.clearMessage();
-              }
-            }
-
-            if (this.cancelled) return;
             this.setStatus('registering');
-            const reg = await this.app.register(this.file, this.sha256, this.abortController.signal);
+            const reg = await this.app.register(this.file, this.abortController.signal);
             if (this.cancelled) {
               this.revoke(reg.auth_token);
               this.setStatus('cancelled');
@@ -947,11 +899,7 @@
             this.downloadUrl = reg.download_url;
             this.setStatus('uploading');
 
-            if (this.app.settings.resumable) {
-              await this.uploadResumable(reg);
-            } else {
-              await this.uploadStream(reg.auth_token);
-            }
+            await this.uploadStream(reg.auth_token);
 
             this.setStatus('completed');
           } catch (err) {
@@ -978,12 +926,6 @@
             this.errorType = 'other';
             this.setStatus('error', err.message || '上传失败');
           }
-        }
-
-        updateProgress(sent, acked) {
-          this.bytesSent = sent;
-          this.bytesAcked = acked;
-          this.updateVisuals();
         }
 
         async uploadStream(token) {
@@ -1019,11 +961,9 @@
                 this.bytesAcked = this.file.size;
                 closeAfter();
               } else if (msg.command === 'stop_upload') {
-                if (!resolved) {
-                  resolved = true;
-                  ws.close();
-                  reject(new CancelError());
-                }
+                // 下载端断开：只作废当前发送循环，保留连接等待重试。
+                // 若这里直接关闭连接，token 会随流一起失效，下载端再也连不上。
+                this.abortSend();
               }
             };
 
@@ -1051,13 +991,21 @@
           });
         }
 
+        // 服务端要求停止发送（下载端断开）后，旧循环通过代次失配自行退出
+        abortSend() {
+          this.sendGen += 1;
+          this.bytesSent = 0;
+          this.bytesAcked = 0;
+          this.updateVisuals();
+        }
+
         sendFileRange(ws, offset, size) {
+          const gen = ++this.sendGen;
           const end = Math.min(offset + size, this.file.size);
           let current = offset;
-          const cancelled = () => this.cancelled;
 
           const readNext = () => {
-            if (this.cancelled) return;
+            if (this.cancelled || gen !== this.sendGen) return;
             if (current >= end || ws.readyState !== WebSocket.OPEN) return;
             if (ws.bufferedAmount > WS_BACKPRESSURE) {
               setTimeout(readNext, 50);
@@ -1066,7 +1014,7 @@
             const chunkEnd = Math.min(current + WS_CHUNK_SIZE, end);
             const slice = this.file.slice(current, chunkEnd);
             readSliceAsArrayBuffer(slice).then((buf) => {
-              if (this.cancelled) return;
+              if (this.cancelled || gen !== this.sendGen) return;
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(buf);
                 current = chunkEnd;
@@ -1080,127 +1028,6 @@
           };
 
           readNext();
-        }
-
-        async uploadResumable(reg) {
-          const info = {
-            chunkSize: reg.chunk_size,
-            totalChunks: reg.total_chunks,
-            uploadUrl: reg.chunk_upload_url,
-            statusUrl: reg.chunk_status_url,
-          };
-          this.resumableInfo = info;
-
-          let status = await this.fetchStatus(info.statusUrl);
-          const missing = new Set(status.missing_chunks || []);
-          if (!missing.size && status.upload_ready) {
-            this.bytesAcked = this.file.size;
-            this.updateVisuals();
-            return;
-          }
-
-          const indexes = Array.from(missing).sort((a, b) => a - b);
-          const running = new Set();
-          const queue = indexes.slice();
-          let errors = 0;
-
-          const pump = async () => {
-            while (queue.length > 0 && !this.cancelled && !this.abortController.signal.aborted) {
-              if (running.size >= CHUNK_CONCURRENCY) {
-                await Promise.race(Array.from(running));
-                continue;
-              }
-              const idx = queue.shift();
-              const p = this.uploadChunk(info, idx).then(() => {
-                running.delete(p);
-              }).catch((err) => {
-                running.delete(p);
-                if (err instanceof CancelError || err instanceof AuthError) throw err;
-                if (err.message && err.message.includes('已被撤销或过期')) throw err;
-                errors++;
-                if (errors > 5) throw err;
-                queue.push(idx);
-              });
-              running.add(p);
-            }
-            if (running.size > 0) await Promise.all(Array.from(running));
-          };
-
-          await pump();
-
-          for (let i = 0; i < STATUS_POLL_MAX; i++) {
-            if (this.cancelled) throw new CancelError();
-            status = await this.fetchStatus(info.statusUrl);
-            this.bytesAcked = status.received_bytes || this.bytesAcked;
-            this.updateVisuals();
-            if (status.upload_ready) {
-              this.bytesAcked = this.file.size;
-              this.updateVisuals();
-              return;
-            }
-            const stillMissing = new Set(status.missing_chunks || []);
-            if (stillMissing.size) {
-              queue.push(...Array.from(stillMissing).sort((a, b) => a - b));
-              errors = 0;
-              await pump();
-            }
-            await delay(STATUS_POLL_INTERVAL, this.abortController.signal);
-          }
-          throw new Error('等待服务端合并超时');
-        }
-
-        async uploadChunk(info, idx) {
-          const offset = BigInt(idx) * BigInt(info.chunkSize);
-          const isLast = idx === info.totalChunks - 1;
-          const end = isLast ? this.file.size : Number(offset) + info.chunkSize;
-          const slice = this.file.slice(Number(offset), end);
-          const url = info.uploadUrl + '?index=' + idx;
-
-          for (let attempt = 0; attempt <= CHUNK_RETRY_MAX; attempt++) {
-            if (this.cancelled || this.abortController.signal.aborted) throw new CancelError();
-            try {
-              const response = await fetch(url, {
-                method: 'PUT',
-                headers: {
-                  'Content-Type': 'application/octet-stream',
-                  ...(this.app.apiKeyHeader() || {}),
-                },
-                body: slice,
-                signal: this.abortController.signal,
-              });
-              if (response.status === 429) {
-                await delay(CHUNK_RETRY_DELAY * (attempt + 1), this.abortController.signal);
-                continue;
-              }
-              if (response.status === 410) throw new Error('上传已被撤销或过期');
-              if (response.status === 401) throw new AuthError();
-              if (!response.ok) {
-                const text = await response.text().catch(() => '');
-                throw new Error(`分片 ${idx} 上传失败 (${response.status}): ${text}`);
-              }
-              this.bytesSent = Math.min(this.file.size, this.bytesSent + (end - Number(offset)));
-              this.updateVisuals();
-              return;
-            } catch (err) {
-              if (err instanceof CancelError || err instanceof AuthError) throw err;
-              if (err.name === 'AbortError') throw new CancelError();
-              if (attempt === CHUNK_RETRY_MAX) throw err;
-              await delay(CHUNK_RETRY_DELAY * (attempt + 1), this.abortController.signal);
-            }
-          }
-        }
-
-        async fetchStatus(url) {
-          const response = await fetch(url, {
-            headers: { ...(this.app.apiKeyHeader() || {}) },
-            signal: this.abortController.signal,
-          });
-          if (response.status === 401) throw new AuthError();
-          if (!response.ok) {
-            const text = await response.text().catch(() => '');
-            throw new Error(`查询状态失败 (${response.status}): ${text}`);
-          }
-          return response.json();
         }
 
         cancel() {
@@ -1230,7 +1057,7 @@
           this.errorMessage = '';
           this.errorType = '';
           this.startTime = 0;
-          this.hashSkipped = false;
+          this.sendGen = 0;
           this.el.remove();
           this.render();
           this.app.els.taskList.appendChild(this.el);
@@ -1290,17 +1117,6 @@
         } catch { return false; }
       }
 
-      function delay(ms, signal) {
-        return new Promise((resolve, reject) => {
-          if (signal && signal.aborted) return reject(new CancelError());
-          const t = setTimeout(resolve, ms);
-          if (signal) signal.addEventListener('abort', () => {
-            clearTimeout(t);
-            reject(new CancelError());
-          }, { once: true });
-        });
-      }
-
       class UploaderApp {
         constructor() {
           this.tasks = [];
@@ -1309,10 +1125,9 @@
             requires_api_key: false,
             max_file_size: 107374182400,
             max_parallel_uploads: 10,
-            resumable_supported: true,
             revoke_supported: true,
           };
-          this.settings = { resumable: false, hash: false, apiKey: '' };
+          this.settings = { apiKey: '' };
           this.needsApiKey = false;
           this.cacheElements();
           this.bindEvents();
@@ -1458,9 +1273,6 @@
         handleFiles(fileList) {
           if (!fileList || !fileList.length) return;
           for (const file of fileList) {
-            if (!file.size && this.settings.resumable) {
-              // resumable requires size > 0; still allow registration to fail with clear message
-            }
             this.addTask(file);
           }
           this.els.fileInput.value = '';
@@ -1514,14 +1326,11 @@
           this.startNext();
         }
 
-        async register(file, sha256, signal) {
+        async register(file, signal) {
           const body = {
             filename: file.name,
             size: file.size,
-            resumable: this.settings.resumable,
-            chunk_size: 0,
           };
-          if (sha256) body.sha256 = sha256;
           const response = await fetch('/register', {
             method: 'POST',
             headers: {

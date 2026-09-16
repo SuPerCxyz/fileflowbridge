@@ -46,14 +46,22 @@ func (ffb *FileFlowBridge) handleStreamConnection(conn net.Conn) {
 		conn.Close()
 		return
 	}
+	isHandover := false
+
 	slotReleased := atomic.Bool{}
 	defer func() {
+		// 握手成功后连接由 monitorConnectionHealth 协程接管，
+		// 上传槽必须等该协程退出（最长 providerIdleTimeout）再释放，
+		// 否则「已握手但还在等下载端」的 provider 不占并发额度，
+		// --max-parallel-uploads 会形同虚设。
+		if isHandover {
+			return
+		}
 		if slotReleased.CompareAndSwap(false, true) {
 			ffb.releaseUploadSlot()
 		}
 	}()
 
-	isHandover := false
 	defer func() {
 		if !isHandover {
 			conn.Close()
@@ -152,6 +160,7 @@ func (ffb *FileFlowBridge) handleStreamConnection(conn net.Conn) {
 	ffb.activeStreams[authToken] = streamConn
 	ffb.mu.Unlock()
 
+	ffb.metrics.incUpload()
 	logInfo("✅ 流隧道已建立: %s (token_id: %s)", fileName, authToken)
 
 	// 发送准备确认（带写超时）
