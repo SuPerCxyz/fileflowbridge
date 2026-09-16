@@ -325,21 +325,35 @@
         return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 2 : 0) + ' ' + units[i];
       }
 
-      // 从 UA 检测当前平台
-      function detectPlatform() {
+      // 从 UA 检测当前平台（同步兜底：部分浏览器不上报 CPU 架构）
+      function detectPlatformSync() {
         const ua = navigator.userAgent.toLowerCase();
-        const arch = (navigator.userAgentData && navigator.userAgentData.platform || '').toLowerCase();
         let os = 'linux';
         if (ua.indexOf('win') !== -1) os = 'windows';
         else if (ua.indexOf('mac') !== -1) os = 'darwin';
         else if (ua.indexOf('linux') !== -1 || ua.indexOf('x11') !== -1) os = 'linux';
 
         let cpu = 'amd64';
-        if (ua.indexOf('arm64') !== -1 || ua.indexOf('aarch64') !== -1 ||
-            arch.indexOf('arm64') !== -1 || arch.indexOf('aarch64') !== -1) {
-          cpu = 'arm64';
-        }
+        if (ua.indexOf('arm64') !== -1 || ua.indexOf('aarch64') !== -1) cpu = 'arm64';
         return { os: os, arch: cpu };
+      }
+
+      // Apple Silicon 上 Safari/Chrome 的 UA 仍写着 "Intel Mac OS X"，
+      // 只能靠 UA-CH 高熵值区分 arm64 / x86_64。
+      async function detectPlatform() {
+        const cur = detectPlatformSync();
+        if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+          try {
+            const hints = await navigator.userAgentData.getHighEntropyValues(['architecture', 'bitness']);
+            const arch = (hints.architecture || '').toLowerCase();
+            if (arch === 'arm' || arch === 'arm64' || arch === 'aarch64') {
+              cur.arch = hints.bitness === '32' ? 'amd64' : 'arm64';
+            } else if (arch === 'x86' || arch === 'x86_64' || arch === 'x64') {
+              cur.arch = 'amd64';
+            }
+          } catch (e) { /* 拿不到高熵值就沿用兜底结果 */ }
+        }
+        return cur;
       }
 
       const platformLabels = {
@@ -362,8 +376,7 @@
         return null;
       }
 
-      function buildUsage(serverBase) {
-        const cur = detectPlatform();
+      function buildUsage(serverBase, cur) {
         const isWin = cur.os === 'windows';
         const binName = isWin ? 'fileflowprovider.exe' : 'fileflowprovider';
         const url = serverBase || 'https://ffb.soocoo.xyz';
@@ -386,6 +399,11 @@
       }
 
       async function load() {
+        // 使用说明只依赖当前平台，不依赖 GitHub API：先渲染，避免取不到 Release 时整块留白
+        const cur = await detectPlatform();
+        const serverBase = window.location.origin;
+        usageCode.innerHTML = buildUsage(serverBase, cur);
+
         try {
           const resp = await fetch('/cli/releases/latest', { cache: 'no-store' });
           if (!resp.ok) {
@@ -409,8 +427,6 @@
             return;
           }
 
-          const cur = detectPlatform();
-
           platformGrid.innerHTML = '';
           const keys = Object.keys(platformLabels);
           for (const key of keys) {
@@ -429,8 +445,6 @@
             platformGrid.appendChild(btn);
           }
 
-          const serverBase = window.location.origin;
-          usageCode.innerHTML = buildUsage(serverBase);
         } catch (err) {
           showMsg('加载失败: ' + (err.message || err), 'error');
         }
