@@ -19,8 +19,8 @@
 
 - 格式化：`go fmt ./...`
 - 静态检查：`go vet ./...`
-- 构建桥接端：`go build -o /tmp/fileflowbridge bridge/main.go`
-- 构建提供端：`go build -o /tmp/fileflowprovider provider/main.go`
+- 构建桥接端：`go build -o /tmp/fileflowbridge ./bridge`
+- 构建提供端：`go build -o /tmp/fileflowprovider ./provider`
 
 按改动范围选择最小充分验证。若无法执行关键验证，必须明确说明原因。
 

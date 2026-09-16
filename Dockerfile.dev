@@ -34,6 +34,10 @@ COPY bridge/static/ ./static/
 # 创建日志目录并设置权限
 RUN mkdir -p /var/log && chown -R appuser:appgroup /var/log
 
+# 非 root 用户需要可写的 Go 构建缓存（默认落在 $HOME/.cache，镜像里不可写）
+ENV GOCACHE=/tmp/go-build
+ENV GOPATH=/tmp/go
+
 # 切换到非root用户
 USER appuser
 
@@ -42,4 +46,4 @@ EXPOSE ${FFB_HTTP_PORT} ${FFB_TCP_PORT}
 
 # 开发模式启动命令 - 先切换到 bridge 目录
 WORKDIR ${APP_HOME}/bridge
-CMD ["sh", "-c", "go run main.go"]
+CMD ["sh", "-c", "go run ."]

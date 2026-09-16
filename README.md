@@ -72,7 +72,7 @@ docker-compose up -d
 ```bash
 # 首先确保bin目录中有预构建的二进制文件
 mkdir -p bin
-GOOS=linux GOARCH=amd64 go build -o bin/fileflowbridge-linux-amd64 bridge/main.go
+GOOS=linux GOARCH=amd64 go build -o bin/fileflowbridge-linux-amd64 ./bridge
 
 # 然后构建Docker镜像
 docker build -t fileflowbridge .

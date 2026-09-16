@@ -2,6 +2,9 @@
 node_modules/
 .claude/
 
+# 本地环境配置（可能含 API Key / Token，不得入库）
+.env
+
 # 本地构建产物
 /fileflowbridge
 /fileflowprovider

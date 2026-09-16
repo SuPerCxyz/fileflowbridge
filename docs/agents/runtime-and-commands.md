@@ -5,17 +5,17 @@
 ## 构建
 
 ```bash
-go build -o fileflowbridge bridge/main.go
-go build -o fileflowprovider provider/main.go
+go build -o fileflowbridge ./bridge
+go build -o fileflowprovider ./provider
 ```
 
 多平台构建：
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/fileflowbridge-linux-amd64 bridge/main.go
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/fileflowbridge-linux-arm64 bridge/main.go
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/fileflowprovider-linux-amd64 provider/main.go
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/fileflowprovider-linux-arm64 provider/main.go
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/fileflowbridge-linux-amd64 ./bridge
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/fileflowbridge-linux-arm64 ./bridge
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/fileflowprovider-linux-amd64 ./provider
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/fileflowprovider-linux-arm64 ./provider
 ```
 
 Docker：
@@ -52,7 +52,7 @@ go fmt ./...
 go vet ./...
 go mod tidy
 go mod verify
-go run -race bridge/main.go --http-port=8000 --tcp-port=8888
+go run -race ./bridge --http-port=8000 --tcp-port=8888
 ```
 
 开发容器和调试流程见 [DEVELOPMENT.md](../../DEVELOPMENT.md)。

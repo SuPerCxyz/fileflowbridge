@@ -5,7 +5,7 @@ echo "🌊 Starting FileFlow Bridge Server..."
 echo "=================================================="
 
 # 编译服务器
-go build -o fileflowbridge ./bridge/main.go
+go build -o fileflowbridge ./bridge
 
 if [ $? -ne 0 ]; then
     echo "❌ 编译失败"

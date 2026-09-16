@@ -155,7 +155,7 @@ docker-compose up -d
 重要说明：
 
 - 浏览器首页和下载页依赖当前工作目录下存在 `./static`
-- 如果从仓库根目录直接运行 `go run bridge/main.go`，静态页面可能不可用
+- 如果从仓库根目录直接运行 `go run ./bridge`，静态页面可能不可用
 - 本地做浏览器页面测试时，优先在 `bridge/` 目录内运行服务端
 
 示例：
@@ -164,13 +164,13 @@ docker-compose up -d
 
 ```bash
 cd bridge
-go run main.go --http-port=8000 --tcp-port=8888 --max-file-size=1 --token-len=8
+go run . --http-port=8000 --tcp-port=8888 --max-file-size=1 --token-len=8
 ```
 
 终端 2：
 
 ```bash
-go build -o fileflowprovider provider/main.go
+go build -o fileflowprovider ./provider
 ```
 
 ### 5.2 测试文件准备
@@ -248,7 +248,7 @@ curl http://127.0.0.1:8000/stats
 1. 构建 Provider
 
 ```bash
-go build -o fileflowprovider provider/main.go
+go build -o fileflowprovider ./provider
 ```
 
 2. 启动 Provider
